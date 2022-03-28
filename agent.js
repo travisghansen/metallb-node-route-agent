@@ -402,7 +402,7 @@ async function setupMetalLBWatch() {
           case 'ADDED':
           case 'MODIFIED':
             logger.info('metallb configmap added/modified');
-            let data = _.get(apiObj, 'data.config');
+            let data = _.get(apiObj, 'data.config', '{}');
             data = yaml.load(data);
             processMetalLBData(data);
             reconcile();
