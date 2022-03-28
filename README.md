@@ -43,6 +43,10 @@ container.
   - default: `config`
 - `METALLB_STATIC_FILE` - a static file on the filesystem to monitor (mostly
   for development purposes). If set the k8s watch is disabled entirely.
+- `CLEANANDEXIT` - if equals `1` then all rules/tables will be deleted and the
+  process will exit
+- `ONESHOT` - if equals `1` then then reconciliation will complete once and the
+  process will exit (useful as a cronjob for example)
 
 # development
 

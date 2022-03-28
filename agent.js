@@ -1,5 +1,6 @@
 const _ = require('lodash');
 const AsyncMutex = require('async-mutex');
+const cp = require('child_process');
 const fs = require('fs');
 const { IpAddress, IpRange } = require('cidr-calc');
 const IpCommand = require('./lib/ip').IpCommand;
@@ -126,7 +127,7 @@ async function reconcile() {
             throw e;
           }
         }
-        
+
         let current_gateways = [];
         for (let route of routes) {
           if (route.dst != DESTINATION) {
@@ -323,6 +324,10 @@ async function reconcile() {
       }
 
       logger.verbose('reconcile finished');
+      if (process.env.ONESHOT == '1') {
+        logger.info('exiting due to ONESHOT');
+        process.exit(0);
+      }
     });
   } catch (e) {
     if (e === AsyncMutex.E_CANCELED) {
@@ -457,6 +462,29 @@ async function setupMetalLBWatch() {
 
 // start the run loop
 (async () => {
+  if (process.env.CLEANANDEXIT == '1') {
+    logger.info('cleaning and exiting');
+
+    // wipe rules
+    logger.info(`clearing rules associated with table: ${TABLE_NAME}`);
+    await ip.clearRulesByTable(TABLE_NAME);
+
+    // flush table
+    logger.info(`flushing route table: ${TABLE_NAME}`);
+    await ip.flushTable(TABLE_NAME);
+
+    // delete table from rt_routes
+    // sed -i '/^20\s/d' filepath
+    let command = `sed -i '/^${TABLE_WEIGHT}\\s/d' ${TABLE_FILE}`;
+    logger.info(
+      `running command to remove table from %s: %s`,
+      TABLE_FILE,
+      command
+    );
+    cp.execSync(command);
+
+    process.exit(0);
+  }
   // development
   await setupMetalLBWatch();
 
