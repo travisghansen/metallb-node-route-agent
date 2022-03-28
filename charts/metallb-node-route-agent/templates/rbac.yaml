@@ -1,0 +1,43 @@
+{{- if .Values.rbac.enabled }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+  labels:
+    {{- include "metallb-node-route-agent.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+
+---
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace | quote }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+
+---
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace | quote }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+roleRef:
+  kind: Role
+  name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
