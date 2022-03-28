@@ -112,10 +112,21 @@ async function reconcile() {
 
       // if peers is empty, both the table and the rules entries should be wiped out
       if (peers.length > 0) {
-        args = ['route', 'show', 'table', TABLE_NAME];
-        let routes = await ip.exec(args);
-        routes = routes.parsed;
+        let routes;
 
+        try {
+          args = ['route', 'show', 'table', TABLE_NAME];
+          routes = await ip.exec(args);
+          routes = routes.parsed;
+        } catch (e) {
+          // exists but no entries yet in kernel land
+          if (e.code == 2) {
+            routes = [];
+          } else {
+            throw e;
+          }
+        }
+        
         let current_gateways = [];
         for (let route of routes) {
           if (route.dst != DESTINATION) {
