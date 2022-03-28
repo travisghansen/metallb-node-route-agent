@@ -1,3 +1,6 @@
+![Image](https://img.shields.io/docker/pulls/travisghansen/metallb-node-route-agent.svg)
+![Image](https://img.shields.io/github/workflow/status/travisghansen/metallb-node-route-agent/CI?style=flat-square)
+
 # metallb-node-route-agent
 
 The purpose of this project is to create routes on the nodes to ensure outbound
