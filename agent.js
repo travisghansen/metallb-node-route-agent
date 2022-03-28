@@ -76,7 +76,7 @@ async function getAddresses() {
  * run the reconciliation loop with mutex to prevent overlapping
  */
 async function reconcile() {
-  logger.debug('reconcile invoked');
+  logger.verbose('reconcile invoked');
   // cancel any pending
   mutex.cancel();
 
@@ -243,7 +243,10 @@ async function reconcile() {
           }
 
           if (matches.length == 1) {
-            logger.debug('routing rule already exists for subnet: %s', subnet);
+            logger.verbose(
+              'routing rule already exists for subnet: %s',
+              subnet
+            );
           }
 
           if (matches.length > 1) {
@@ -308,11 +311,11 @@ async function reconcile() {
         }
       }
 
-      logger.debug('reconcile finished');
+      logger.verbose('reconcile finished');
     });
   } catch (e) {
     if (e === AsyncMutex.E_CANCELED) {
-      logger.debug('reconcile canceled');
+      logger.verbose('reconcile canceled');
     } else {
       logger.error('unexpected error', e);
     }
@@ -332,7 +335,7 @@ function processMetalLBData(data) {
   let address_data = _.get(data, 'address-pools', []);
   for (let pool of address_data) {
     if (_.get(pool, 'protocol', '').toLowerCase() != 'bgp') {
-      logger.debug(
+      logger.verbose(
         'skipping pool %s due to non-bgp protocol %s',
         pool.name,
         pool.protocol
@@ -355,7 +358,7 @@ async function setupMetalLBWatch() {
     logger.info(`starting watch static file ${METALLB_STATIC_FILE}`);
     const staticFilePath = METALLB_STATIC_FILE;
     setInterval(function () {
-      logger.debug('refresh metallb addresses');
+      logger.verbose('refresh metallb addresses');
       let data = fs.readFileSync(staticFilePath, {
         encoding: 'utf8',
         flag: 'r'
@@ -410,7 +413,7 @@ async function setupMetalLBWatch() {
             reconcile();
             break;
           case 'BOOKMARK':
-            logger.debug(
+            logger.verbose(
               `metallb confimap bookmarked: ${watchObj.metadata.resourceVersion}`
             );
             break;
