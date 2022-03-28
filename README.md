@@ -84,6 +84,7 @@ ip route add default via <frr ip> table metallb-nra
 
 # TODO
 
+- introduce a one-shot execution style to set/wipe state
 - use `ip -batch` for operations?
 - use `nexthop groups`?
 - use a proper `netlink` library to manage the rules

@@ -234,7 +234,7 @@ async function reconcile() {
           lookup.srclen = subnet.split('/')[1];
           lookup.table = TABLE_NAME;
 
-          let matches = await ip.getRulesByProperties(lookup);
+          let matches = await ip.getRulesByProperties(lookup, TABLE_NAME);
 
           if (matches.length == 0) {
             logger.info('creating routing rule for subnet: %s', subnet);
