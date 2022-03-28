@@ -1,0 +1,13 @@
+# ip -j route show table metallb-nra
+---
+- dst: default
+  flags: []
+  nexthops:
+  - gateway: 172.28.4.130
+    dev: office
+    weight: 1
+    flags: []
+  - gateway: 172.28.4.131
+    dev: office
+    weight: 1
+    flags: []

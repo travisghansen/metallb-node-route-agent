@@ -1,0 +1,22 @@
+---
+address-pools:
+- addresses:
+  - 172.29.3.0-172.29.3.255
+  name: default
+  protocol: layer2
+- addresses:
+  - 192.168.57.0/24
+  - 192.168.58.10-192.168.58.30
+  #- foo-bar-baz
+  #- invalid/24
+
+  auto-assign: false
+  name: dedicated-bgp
+  protocol: bgp
+peers:
+- my-asn: 64512
+  peer-address: 172.29.0.1
+  peer-asn: 64512
+- my-asn: 64512
+  peer-address: 172.29.0.3
+  peer-asn: 64512

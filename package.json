@@ -1,0 +1,38 @@
+{
+  "name": "metallb-node-route-agent",
+  "version": "0.1.0",
+  "description": "manage node routes",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node --nouse-idle-notification --expose-gc --max-old-space-size=8192 agent.js",
+    "eslint": "eslint .",
+    "prettier": "prettier --config .prettierrc.js '**/*.js' --write"
+  },
+  "author": "Travis Glenn Hansen <travisghansen@yahoo.com>",
+  "bugs": {
+    "url": "https://github.com/travisghansen/metallb-node-route-agent/issues"
+  },
+  "homepage": "https://github.com/travisghansen/metallb-node-route-agent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/travisghansen/metallb-node-route-agent.git"
+  },
+  "dependencies": {
+    "@kubernetes/client-node": "^0.16.3",
+    "async-mutex": "^0.3.2",
+    "cidr-calc": "^1.0.3",
+    "ip-address": "^8.1.0",
+    "js-yaml": "^4.1.0",
+    "lodash": "^4.17.21",
+    "netlink": "^0.2.1",
+    "winston": "^3.6.0"
+  },
+  "devDependencies": {
+    "eslint": "^8.12.0",
+    "eslint-config-prettier": "^8.5.0",
+    "eslint-plugin-prettier": "^4.0.0",
+    "esprima": "^4.0.1",
+    "prettier": "^2.6.1"
+  }
+}

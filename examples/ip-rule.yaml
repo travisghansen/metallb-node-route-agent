@@ -1,0 +1,15 @@
+# ip -j rule
+---
+- priority: 0
+  src: all
+  table: local
+- priority: 32765
+  src: 172.28.42.0
+  srclen: 24
+  table: metallb-nra
+- priority: 32766
+  src: all
+  table: main
+- priority: 32767
+  src: all
+  table: default
