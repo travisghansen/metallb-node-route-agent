@@ -7,7 +7,7 @@ The purpose of this project is to create routes on the nodes to ensure outbound
 `LoadBalancer` traffic uses the `metallb` bgp peers on the return path (ie:
 avoid possible asymmetric routing scenarios).
 
-To achieve this goal the agent creates/manages a specific routing tables and
+To achieve this goal the agent creates/manages a specific routing table and
 directs all traffic from relevant `LoadBalancer` IPs to route through the
 configured `metallb` `peers`.
 
@@ -22,6 +22,9 @@ The container should run in the `host` networking namespace. Additionally you
 must mount `/etc/iproute2` from the host into the same location in the
 container.
 
+Additionally if you have multiple paths (bgp peers) you likely want to ensure
+your nodes have the sysctl `net.ipv4.fib_multipath_use_neigh` set to `1`.
+
 ## env vars
 
 - `MAX_RECONCILE_WAIT` - a timer is setup on this interval (ms) to reconcile
@@ -32,9 +35,11 @@ container.
   - default: `metallb-nra`
 - `TABLE_WEIGHT` - weight of the routing table to manage
   - default: `20`
-- `PEER_WEIGHT` - weight of reach peer add the to routing table
+- `PEER_WEIGHT` - weight of each peer added to the routing table
   - default: 100
   - all peers have the same weight currently so not super helpful to modify
+- `RULE_PRIORITY` - the priority to give to the managed rules
+  - default: 20
 - `DESTINATION` - the `dst` network of the rule
   - default: `default`
 - `METALLB_NAMESPACE` - namespace where `metallb` is running
@@ -87,6 +92,12 @@ ip rule add from 172.28.42.0/24 lookup metallb-nra
 
 ip rule add from <service network> lookup metallb-nra
 ip route add default via <frr ip> table metallb-nra
+
+
+# review entries
+ip -d rule show table metallb-nra
+ip -d route show table metallb-nra
+
 ```
 
 # TODO

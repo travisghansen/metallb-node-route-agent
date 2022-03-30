@@ -19,6 +19,9 @@ const TABLE_NAME = process.env.TABLE_NAME || 'metallb-nra';
 const TABLE_WEIGHT = process.env.TABLE_WEIGHT || 20;
 const TABLE_FILE = '/etc/iproute2/rt_tables';
 
+// rules
+const RULE_PRIORITY = process.env.RULE_PRIORITY || 20;
+
 // route settings
 const PEER_WEIGHT = process.env.PEER_WEIGHT || 100;
 const DESTINATION = 'default';
@@ -245,12 +248,22 @@ async function reconcile() {
           lookup.src = subnet.split('/')[0];
           lookup.srclen = subnet.split('/')[1];
           lookup.table = TABLE_NAME;
+          lookup.priority = RULE_PRIORITY;
 
           let matches = await ip.getRulesByProperties(lookup, TABLE_NAME);
 
           if (matches.length == 0) {
             logger.info('creating routing rule for subnet: %s', subnet);
-            args = ['rule', 'add', 'from', subnet, 'lookup', TABLE_NAME];
+            args = [
+              'rule',
+              'add',
+              'from',
+              subnet,
+              'lookup',
+              TABLE_NAME,
+              'priority',
+              RULE_PRIORITY
+            ];
             await ip.exec(args);
           }
 
@@ -265,10 +278,8 @@ async function reconcile() {
             // leave the lowest numbered match intact
             for (let i = matches.length - 1; i > 0; i--) {
               let rule = matches[i];
-              if (rule.priority) {
-                logger.warn('removing duplicate rule:', rule);
-                await ip.deleteRuleByPriority(rule.priority);
-              }
+              logger.warn('removing duplicate rule:', rule);
+              await ip.deleteRule(rule);
             }
           }
         }
@@ -285,6 +296,7 @@ async function reconcile() {
             lookup.src = subnet.split('/')[0];
             lookup.srclen = subnet.split('/')[1];
             lookup.table = TABLE_NAME;
+            lookup.priority = RULE_PRIORITY;
 
             // TODO: make this work with ipv6
             // fill in the missing srclen when it is /32
@@ -293,7 +305,8 @@ async function reconcile() {
             if (
               rule.src == lookup.src &&
               r_srclen == lookup.srclen &&
-              rule.table == lookup.table
+              rule.table == lookup.table &&
+              rule.priority == lookup.priority
             ) {
               match = true;
               break;
@@ -301,12 +314,8 @@ async function reconcile() {
           }
 
           if (!match) {
-            logger.warn(
-              'removing imposter rule: %s (%s)',
-              `${rule.src}/${rule.srclen || 32}`,
-              rule.priority
-            );
-            await ip.deleteRuleByPriority(rule.priority);
+            logger.warn('removing imposter rule:', rule);
+            await ip.deleteRule(rule);
           }
         }
       } else {
