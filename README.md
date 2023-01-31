@@ -51,6 +51,7 @@ your nodes have the sysctl `net.ipv4.fib_multipath_use_neigh` set to `1`.
   - default: `config`
 - `METALLB_STATIC_FILE` - a static file on the filesystem to monitor (mostly
   for development purposes). If set the k8s watch is disabled entirely.
+- `METALLB_USE_CRDS` - prefer `CRDs` over configmap
 - `CLEANANDEXIT` - if equals `1` then all rules/tables will be deleted and the
   process will exit
 - `ONESHOT` - if equals `1` then then reconciliation will complete once and the

@@ -1,6 +1,6 @@
 {
   "name": "metallb-node-route-agent",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "manage node routes",
   "main": "agent.js",
   "scripts": {
@@ -19,17 +19,21 @@
     "url": "https://github.com/travisghansen/metallb-node-route-agent.git"
   },
   "dependencies": {
-    "@kubernetes/client-node": "^0.16.3",
-    "async-mutex": "^0.3.2",
+    "@kubernetes/client-node": "^0.18.1",
+    "async-mutex": "^0.4.0",
     "cidr-calc": "^1.0.3",
     "ip-address": "^8.1.0",
     "js-yaml": "^4.1.0",
     "lodash": "^4.17.21",
-    "netlink": "^0.2.1",
+    "lru-cache": "^7.14.1",
+    "netlink": "^0.2.2",
+    "query-string": "^7.1.3",
+    "request": "^2.88.2",
+    "uri-js": "^4.4.1",
     "winston": "^3.6.0"
   },
   "devDependencies": {
-    "eslint": "^8.12.0",
+    "eslint": "^8.33.0",
     "eslint-config-prettier": "^8.5.0",
     "eslint-plugin-prettier": "^4.0.0",
     "esprima": "^4.0.1",

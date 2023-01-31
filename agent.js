@@ -5,8 +5,12 @@ const fs = require('fs');
 const { IpAddress, IpRange } = require('cidr-calc');
 const IpCommand = require('./lib/ip').IpCommand;
 const k8s = require('@kubernetes/client-node');
+const KubeConfig = require('./lib/k8s').KubeConfig;
 const logger = require('./lib/logger').logger;
 const yaml = require('js-yaml');
+
+const kc = new KubeConfig();
+kc.loadFromDefault();
 
 const ip = new IpCommand({ logger });
 const mutex = new AsyncMutex.Mutex();
@@ -35,9 +39,19 @@ const K8S_NAMESPACE_FILE =
 const METALLB_STATIC_FILE = process.env.METALLB_STATIC_FILE;
 const METALLB_STATIC_FILE_WAIT = process.env.METALLB_STATIC_FILE_WAIT || 5000;
 
+const METALLB_USE_CRDS = process.env.METALLB_USE_CRDS;
+
 // globals
 let metallb_loaded = false;
+
+/**
+ * [ '172.29.0.1', '172.29.0.3' ]
+ */
 let metallb_peers = [];
+
+/**
+ * [ '192.168.57.0/24', '192.168.58.10-192.168.58.30' ]
+ */
 let metallb_addresses = [];
 
 /**
@@ -347,7 +361,12 @@ async function reconcile() {
   }
 }
 
-function processMetalLBData(data) {
+/**
+ * setup peers and addresses
+ *
+ * @param {*} data
+ */
+function processMetalLBConfigMapData(data) {
   let peers = [];
   let peer_data = _.get(data, 'peers', []);
   for (let peer of peer_data) {
@@ -378,73 +397,215 @@ function processMetalLBData(data) {
   metallb_loaded = true;
 }
 
-async function setupMetalLBWatch() {
-  if (METALLB_STATIC_FILE) {
-    logger.info(`starting watch static file ${METALLB_STATIC_FILE}`);
-    const staticFilePath = METALLB_STATIC_FILE;
-    setInterval(function () {
-      logger.verbose('refresh metallb addresses');
-      let data = fs.readFileSync(staticFilePath, {
+/**
+ * watch the static file
+ */
+async function setupMetalLBStaticFileWatch() {
+  logger.info(`starting watch static file ${METALLB_STATIC_FILE}`);
+  const staticFilePath = METALLB_STATIC_FILE;
+  setInterval(function () {
+    logger.verbose('refresh metallb addresses');
+    let data = fs.readFileSync(staticFilePath, {
+      encoding: 'utf8',
+      flag: 'r'
+    });
+    data = yaml.load(data);
+    processMetalLBConfigMapData(data);
+  }, METALLB_STATIC_FILE_WAIT);
+}
+
+async function getMetalLBNamespace() {
+  let ns = METALLB_NAMESPACE;
+
+  // if running in k8s determine using file
+  if (!ns) {
+    if (fs.existsSync(K8S_NAMESPACE_FILE)) {
+      ns = fs.readFileSync(K8S_NAMESPACE_FILE, {
         encoding: 'utf8',
         flag: 'r'
       });
-      data = yaml.load(data);
-      processMetalLBData(data);
-    }, METALLB_STATIC_FILE_WAIT);
+    }
   }
 
-  if (!METALLB_STATIC_FILE) {
-    // use env var if set
-    let ns = METALLB_NAMESPACE;
+  // fallback to default ns
+  if (!ns) {
+    ns = 'metallb-system';
+  }
 
-    // if running in k8s determine using file
-    if (!ns) {
-      if (fs.existsSync(K8S_NAMESPACE_FILE)) {
-        ns = fs.readFileSync(K8S_NAMESPACE_FILE, {
-          encoding: 'utf8',
-          flag: 'r'
-        });
+  return ns;
+}
+
+/**
+ * watch the configmap
+ */
+async function setupMetalLBConfigMapWatch() {
+  // use env var if set
+  let ns = await getMetalLBNamespace();
+
+  // if running in k8s determine using file
+  if (!ns) {
+    if (fs.existsSync(K8S_NAMESPACE_FILE)) {
+      ns = fs.readFileSync(K8S_NAMESPACE_FILE, {
+        encoding: 'utf8',
+        flag: 'r'
+      });
+    }
+  }
+
+  // fallback to default ns
+  if (!ns) {
+    ns = 'metallb-system';
+  }
+
+  let cf = METALLB_CONFIGMAP_NAME;
+
+  logger.info(`starting watch on k8s configmap ${ns}/${cf}`);
+
+  const watch = new k8s.Watch(kc);
+  watch.watch(
+    `/api/v1/watch/namespaces/${ns}/configmaps/${cf}`,
+    {},
+    (type, apiObj, watchObj) => {
+      switch (type) {
+        case 'ADDED':
+        case 'MODIFIED': {
+          logger.info('metallb configmap added/modified');
+          let data = _.get(apiObj, 'data.config', '{}');
+          data = yaml.load(data);
+          processMetalLBConfigMapData(data);
+          reconcile();
+          break;
+        }
+        case 'DELETED':
+          logger.warn('metallb configmap deleted from watch');
+          processMetalLBConfigMapData({});
+          reconcile();
+          break;
+        case 'BOOKMARK':
+          logger.verbose(
+            `metallb confimap bookmarked: ${watchObj.metadata.resourceVersion}`
+          );
+          break;
+        default:
+          logger.error(
+            'unknown operation on metallb configmap watch: %s',
+            type
+          );
+          break;
+      }
+    },
+    async e => {
+      metallb_loaded = false;
+      if (e) {
+        logger.error('watch failure: %s', e);
+        switch (e.code) {
+          case 'ECONNREFUSED':
+            process.exit(1);
+        }
+      } else {
+        logger.info('watch timeout');
+      }
+
+      await sleep(5000);
+      setupMetalLBConfigMapWatch();
+    }
+  );
+}
+
+async function processMetalLBCRDData() {
+  metallb_loaded = false;
+  metallb_peers = [];
+  metallb_addresses = [];
+
+  let ns = await getMetalLBNamespace();
+
+  let peerResource = crd_resources.find(resource => {
+    return resource.name == 'bgppeers';
+  });
+
+  let poolResource = crd_resources.find(resource => {
+    return resource.name == 'ipaddresspools';
+  });
+
+  let advResource = crd_resources.find(resource => {
+    return resource.name == 'bgpadvertisements';
+  });
+
+  let nsPath = '';
+  // MetalLB currently only watches CRDs in the deployed namespace
+  nsPath = `/namespaces/${ns}`;
+
+  let peers = await kc.getAll(
+    `/apis/${peerResource.groupVersion}${nsPath}/bgppeers`
+  );
+  let pools = await kc.getAll(
+    `/apis/${poolResource.groupVersion}${nsPath}/ipaddresspools`
+  );
+  let advertisements = await kc.getAll(
+    `/apis/${advResource.groupVersion}${nsPath}/bgpadvertisements`
+  );
+
+  for (const peer of peers) {
+    metallb_peers.push(peer.spec.peerAddress);
+  }
+
+  for (const advertisement of advertisements) {
+    for (const poolName of advertisement.spec.ipAddressPools) {
+      for (const pool of pools) {
+        if (poolName == pool.metadata.name) {
+          metallb_addresses.push(...pool.spec.addresses);
+        }
       }
     }
+  }
 
-    // fallback to default ns
-    if (!ns) {
-      ns = 'metallb-system';
-    }
+  metallb_loaded = true;
+}
 
-    let cf = METALLB_CONFIGMAP_NAME;
+/**
+ * watch the crds
+ */
+async function setupMetalLBCRDsWatch() {
+  logger.info(`starting crd watches`);
 
-    logger.info(`starting watch on k8s configmap ${ns}/${cf}`);
+  let ns = await getMetalLBNamespace();
+  let nsPath = '';
+  // MetalLB currently only watches CRDs in the deployed namespace
+  nsPath = `/namespaces/${ns}`;
 
-    const kc = new k8s.KubeConfig();
-    kc.loadFromDefault();
+  for (const resource of crd_resources) {
+    const resourcePath = `/apis/${resource.groupVersion}${nsPath}/${resource.name}`;
+    const resourceVersion = await kc.getCurrentResourceVersion(resourcePath);
     const watch = new k8s.Watch(kc);
+
+    logger.info(
+      `starting ${resourcePath} watch at resourceVersion=${resourceVersion}`
+    );
     watch.watch(
-      `/api/v1/watch/namespaces/${ns}/configmaps/${cf}`,
+      `${resourcePath}?resourceVersion=${resourceVersion}`,
       {},
-      (type, apiObj, watchObj) => {
+      async (type, apiObj, watchObj) => {
         switch (type) {
           case 'ADDED':
-          case 'MODIFIED':
-            logger.info('metallb configmap added/modified');
-            let data = _.get(apiObj, 'data.config', '{}');
-            data = yaml.load(data);
-            processMetalLBData(data);
-            reconcile();
+          case 'MODIFIED': {
+            logger.info(`${resourcePath} added/modified`);
+            await processMetalLBCRDData();
+            await reconcile();
             break;
+          }
           case 'DELETED':
-            logger.warn('metallb configmap deleted from watch');
-            processMetalLBData({});
-            reconcile();
+            logger.warn(`${resourcePath} deleted from watch`);
+            await processMetalLBCRDData();
+            await reconcile();
             break;
           case 'BOOKMARK':
             logger.verbose(
-              `metallb confimap bookmarked: ${watchObj.metadata.resourceVersion}`
+              `${resourcePath} bookmarked: ${watchObj.metadata.resourceVersion}`
             );
             break;
           default:
             logger.error(
-              'unknown operation on metallb configmap watch: %s',
+              `unknown operation on ${resourcePath} watch: %s`,
               type
             );
             break;
@@ -463,11 +624,16 @@ async function setupMetalLBWatch() {
         }
 
         await sleep(5000);
-        setupMetalLBWatch();
+        setupMetalLBCRDsWatch();
       }
     );
   }
+
+  await processMetalLBCRDData();
+  await reconcile();
 }
+
+const crd_resources = [];
 
 // start the run loop
 (async () => {
@@ -494,8 +660,30 @@ async function setupMetalLBWatch() {
 
     process.exit(0);
   }
+
   // development
-  await setupMetalLBWatch();
+  if (METALLB_STATIC_FILE) {
+    await setupMetalLBStaticFileWatch();
+  }
+
+  if (!METALLB_STATIC_FILE) {
+    if (METALLB_USE_CRDS) {
+      let resources = await kc.getAPIResourcesByGroup('metallb.io');
+      for (const resourceName of [
+        'bgppeers',
+        'ipaddresspools',
+        'bgpadvertisements'
+      ]) {
+        const r = resources.find(resource => {
+          return resource.name == resourceName;
+        });
+        crd_resources.push(r);
+      }
+      await setupMetalLBCRDsWatch();
+    } else {
+      await setupMetalLBConfigMapWatch();
+    }
+  }
 
   if (MAX_RECONCILE_WAIT > 0) {
     let wait = MAX_RECONCILE_WAIT;
