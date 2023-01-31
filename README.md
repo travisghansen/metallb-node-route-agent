@@ -1,5 +1,5 @@
 ![Image](https://img.shields.io/docker/pulls/travisghansen/metallb-node-route-agent.svg)
-![Image](https://img.shields.io/github/workflow/status/travisghansen/metallb-node-route-agent/CI?style=flat-square)
+![Image](https://img.shields.io/github/actions/workflow/status/travisghansen/metallb-node-route-agent/main.yml?branch=master&style=flat-square)
 
 # metallb-node-route-agent
 
