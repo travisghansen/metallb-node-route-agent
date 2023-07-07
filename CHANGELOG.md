@@ -1,3 +1,9 @@
+# v0.3.1
+
+Released 2023-02-10
+
+- support crds in the chart
+
 # v0.3.0
 
 Released 2023-01-31
