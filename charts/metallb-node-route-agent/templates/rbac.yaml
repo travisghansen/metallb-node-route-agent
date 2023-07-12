@@ -48,4 +48,32 @@ roleRef:
   kind: Role
   name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
   apiGroup: rbac.authorization.k8s.io
+
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - nodes
+  verbs:
+  - get
+  - list
+  - watch
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+subjects:
+- kind: ServiceAccount
+  name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+  namespace: {{ .Release.Namespace | quote }}
 {{- end }}

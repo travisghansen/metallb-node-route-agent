@@ -40,6 +40,11 @@ spec:
           - name: iproute2
             mountPath: /etc/iproute2
           env:
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: spec.nodeName
 {{- if .Values.extraEnv }}
 {{ toYaml .Values.extraEnv | indent 10 }}
 {{- end }}

@@ -101,6 +101,9 @@ ip -d route show table metallb-nra
 
 # remove rules
 while ip rule delete from 0/0 to 0/0 table metallb-nra 2>/dev/null; do true; done
+
+
+ip route flush cache
 ```
 
 # TODO

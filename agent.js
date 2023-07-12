@@ -41,6 +41,8 @@ const METALLB_STATIC_FILE_WAIT = process.env.METALLB_STATIC_FILE_WAIT || 5000;
 
 const METALLB_USE_CRDS = process.env.METALLB_USE_CRDS;
 
+const NODE_NAME = process.env.NODE_NAME;
+
 // globals
 let metallb_loaded = false;
 
@@ -109,6 +111,9 @@ async function reconcile() {
       }
 
       let args = [];
+
+      //logger.info('skipping reconcile, development debug');
+      //return;
 
       //////// step 1, create the routing table as appropriate /////////
 
@@ -546,9 +551,40 @@ async function processMetalLBCRDData() {
   );
 
   for (const peer of peers) {
-    metallb_peers.push(peer.spec.peerAddress);
+    let peerAllowed = true;
+
+    // https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#resources-that-support-set-based-requirements
+    let nodeSelectors = _.get(peer, 'spec.nodeSelectors');
+    if (Array.isArray(nodeSelectors) && nodeSelectors.length > 0) {
+      let node = await kc.makeHttpRestRequest(
+        `/api/v1/nodes/${NODE_NAME}`,
+        'GET'
+      );
+      node = node.body;
+
+      // defaulting to false, if *any* of the selectors is true then peer is allowed
+      peerAllowed = false;
+      let i = 0;
+      do {
+        logger.debug(`asserting labelSelector %j`, nodeSelectors[i]);
+        peerAllowed = await kc.assertLabelSelector(node, nodeSelectors[i]);
+        i++;
+      } while (!peerAllowed && i < nodeSelectors.length);
+    }
+
+    if (peerAllowed) {
+      metallb_peers.push(peer.spec.peerAddress);
+    } else {
+      logger.info(
+        `ignoring peer %s due to nodeSelectors`,
+        peer.spec.peerAddress
+      );
+    }
   }
 
+  /**
+   * NOTE: purposely ignoring spec.nodeSelectors here for DSR-like scenarios
+   */
   for (const advertisement of advertisements) {
     for (const poolName of advertisement.spec.ipAddressPools) {
       for (const pool of pools) {
@@ -585,6 +621,68 @@ async function setupMetalLBCRDsWatch() {
       `${resourcePath}?resourceVersion=${resourceVersion}`,
       {},
       async (type, apiObj, watchObj) => {
+        switch (type) {
+          case 'ADDED':
+          case 'MODIFIED': {
+            logger.info(`${resourcePath} added/modified`);
+            await processMetalLBCRDData();
+            await reconcile();
+            break;
+          }
+          case 'DELETED':
+            logger.warn(`${resourcePath} deleted from watch`);
+            await processMetalLBCRDData();
+            await reconcile();
+            break;
+          case 'BOOKMARK':
+            logger.verbose(
+              `${resourcePath} bookmarked: ${watchObj.metadata.resourceVersion}`
+            );
+            break;
+          default:
+            logger.error(
+              `unknown operation on ${resourcePath} watch: %s`,
+              type
+            );
+            break;
+        }
+      },
+      async e => {
+        metallb_loaded = false;
+        if (e) {
+          logger.error('watch failure: %s', e);
+          switch (e.code) {
+            case 'ECONNREFUSED':
+              process.exit(1);
+          }
+        } else {
+          logger.info('watch timeout');
+        }
+
+        await sleep(5000);
+        setupMetalLBCRDsWatch();
+      }
+    );
+  }
+
+  if (NODE_NAME) {
+    // watching a specific node fails for some reason with the js client
+    //const resourcePath = `/api/v1/nodes/${NODE_NAME}`;
+    const resourcePath = `/api/v1/nodes`;
+    const resourceVersion = await kc.getCurrentResourceVersion(resourcePath);
+    const watch = new k8s.Watch(kc);
+    logger.info(
+      `starting ${resourcePath} watch at resourceVersion=${resourceVersion}`
+    );
+    watch.watch(
+      `${resourcePath}?resourceVersion=${resourceVersion}`,
+      {},
+      async (type, apiObj, watchObj) => {
+        if (_.get(watchObj, 'object.metadata.name') != NODE_NAME) {
+          logger.debug('ignoring node update because non-matching node');
+          return;
+        }
+
         switch (type) {
           case 'ADDED':
           case 'MODIFIED': {

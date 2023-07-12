@@ -1,3 +1,10 @@
+# v0.3.2
+
+Released 2023-07-12
+
+- proer support for `nodeSelectors` in the CRDs (ie: limit upstream routes to only those applicable to the given node)
+- update chart to support new rbac neccessary for node logic
+
 # v0.3.1
 
 Released 2023-02-10
