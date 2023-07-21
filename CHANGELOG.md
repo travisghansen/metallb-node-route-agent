@@ -1,3 +1,9 @@
+# v0.4.4
+
+Released 2023-07-21
+
+- proper `timeout` setting for `ip` calls
+
 # v0.4.3
 
 Released 2023-07-21
