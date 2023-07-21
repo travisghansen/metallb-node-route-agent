@@ -1,3 +1,12 @@
+# v0.4.1
+
+Released 2023-07-21
+
+- add additional packages to container image
+- support executing arbitrary pre/post scripts during reconcile (should be
+  idempotent)
+- bump docker base image to `hydrogen-bookworm-slim`
+
 # v0.4.0
 
 Released 2023-07-20
@@ -5,6 +14,7 @@ Released 2023-07-20
 - remove management of `TABLE_NAME` in `/etc/iproute2/rt_tables`
 - better management of watches to unsubscribe when appropriate
 - more robust reconcile logic to prevent race conditions
+- support `RULE_FWMARK`
 
 # v0.3.2
 

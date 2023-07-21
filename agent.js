@@ -1,4 +1,5 @@
 const _ = require('lodash');
+const cp = require('child_process');
 const AsyncMutex = require('async-mutex');
 const fs = require('fs');
 const { IpAddress, IpRange } = require('cidr-calc');
@@ -57,6 +58,9 @@ const METALLB_STATIC_FILE_WAIT = process.env.METALLB_STATIC_FILE_WAIT || 5000;
 const METALLB_USE_CRDS = process.env.METALLB_USE_CRDS;
 
 const NODE_NAME = process.env.NODE_NAME;
+
+const PRE_RECONCILE_SCRIPT_PATH = process.env.PRE_RECONCILE_SCRIPT_PATH;
+const POST_RECONCILE_SCRIPT_PATH = process.env.POST_RECONCILE_SCRIPT_PATH;
 
 // globals
 let metallb_loaded = false;
@@ -126,6 +130,22 @@ async function reconcile() {
       if (!metallb_loaded) {
         logger.info('skipping reconcile, metallb data not yet loaded');
         return;
+      }
+
+      if (PRE_RECONCILE_SCRIPT_PATH) {
+        logger.verbose(
+          `executing PRE_RECONCILE_SCRIPT_PATH: ${PRE_RECONCILE_SCRIPT_PATH}`
+        );
+        let res = cp.spawnSync(PRE_RECONCILE_SCRIPT_PATH, [], {
+          timeout: 10 * 1000
+        });
+
+        let message = `executed ${PRE_RECONCILE_SCRIPT_PATH}: code=${res.status}, signal=${res.signal}, stdout=${res.stdout}, stderr=${res.stderr}`;
+        if (res.status != 0) {
+          logger.warn(message);
+        } else {
+          logger.debug(message);
+        }
       }
 
       let args = [];
@@ -348,6 +368,22 @@ async function reconcile() {
             TABLE_WEIGHT
           );
           await ip.clearRulesByTable(TABLE_NAME);
+        }
+      }
+
+      if (POST_RECONCILE_SCRIPT_PATH) {
+        logger.verbose(
+          `executing POST_RECONCILE_SCRIPT_PATH: ${POST_RECONCILE_SCRIPT_PATH}`
+        );
+        let res = cp.spawnSync(POST_RECONCILE_SCRIPT_PATH, [], {
+          timeout: 10 * 1000
+        });
+
+        let message = `executed ${POST_RECONCILE_SCRIPT_PATH}: code=${res.status}, signal=${res.signal}, stdout=${res.stdout}, stderr=${res.stderr}`;
+        if (res.status != 0) {
+          logger.warn(message);
+        } else {
+          logger.debug(message);
         }
       }
 

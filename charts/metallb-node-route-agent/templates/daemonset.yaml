@@ -39,6 +39,9 @@ spec:
           volumeMounts:
           - name: iproute2
             mountPath: /etc/iproute2
+          - name: configmap
+            mountPath: /tmp/config
+            readOnly: true
           env:
           - name: NODE_NAME
             valueFrom:
@@ -66,3 +69,8 @@ spec:
         hostPath:
           path: /etc/iproute2
           type: Directory
+      - name: configmap
+        configMap:
+          name: {{ include "metallb-node-route-agent.fullname" . }}
+          # 770 in unix decimal
+          defaultMode: 504

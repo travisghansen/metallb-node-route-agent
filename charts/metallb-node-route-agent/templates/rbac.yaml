@@ -17,6 +17,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
   namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "metallb-node-route-agent.labels" . | nindent 4 }}
 rules:
 - apiGroups:
   - ""
@@ -41,6 +43,8 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
   namespace: {{ .Release.Namespace | quote }}
+  labels:
+    {{- include "metallb-node-route-agent.labels" . | nindent 4 }}
 subjects:
   - kind: ServiceAccount
     name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
@@ -54,6 +58,8 @@ kind: ClusterRole
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+  labels:
+    {{- include "metallb-node-route-agent.labels" . | nindent 4 }}
 rules:
 - apiGroups:
   - ""
@@ -68,6 +74,8 @@ kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: {{ include "metallb-node-route-agent.serviceAccountName" . }}
+  labels:
+    {{- include "metallb-node-route-agent.labels" . | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

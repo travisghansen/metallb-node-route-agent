@@ -41,8 +41,12 @@ your nodes have the sysctl `net.ipv4.fib_multipath_use_neigh` set to `1`.
 - `RULE_FWMARK` - the fwmark to give to the managed rules (show be provided in
   hex format exactly as the `ip` output shows)
   - default: unset
-- `DESTINATION` - the `dst` network of the rule
+- `DESTINATION` - the `dst` network of the route
   - default: `default`
+- `PRE_RECONCILE_SCRIPT_PATH` - path to script (must be marked executable) to
+  run _before_ the reonciliation happens
+- `POST_RECONCILE_SCRIPT_PATH` - path to script (must be marked executable) to
+  run _after_ the reonciliation happens
 - `METALLB_NAMESPACE` - namespace where `metallb` is running
   - default: `""`
   - will fallback to the value in
@@ -53,6 +57,8 @@ your nodes have the sysctl `net.ipv4.fib_multipath_use_neigh` set to `1`.
 - `METALLB_STATIC_FILE` - a static file on the filesystem to monitor (mostly
   for development purposes). If set the k8s watch is disabled entirely.
 - `METALLB_USE_CRDS` - prefer `CRDs` over configmap
+- `LOG_LEVEL` - `error|warn|info|verbose|debug|silly`
+  - default: `info`
 - `CLEANANDEXIT` - if equals `1` then all rules/tables will be deleted and the
   process will exit
 - `ONESHOT` - if equals `1` then then reconciliation will complete once and the

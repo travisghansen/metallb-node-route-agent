@@ -15,6 +15,15 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# all files get mounted to /tmp/config 770 perms
+configMapData: {}
+#  pre.sh: |
+#    #/bin/bash
+#    echo hello world
+#  post.sh: |
+#    #/bin/bash
+#    echo hello world
+
 rbac:
   enabled: true
 
