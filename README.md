@@ -81,8 +81,13 @@ may end up routing to BGP Peers instead of staying local to the cluster.
 
 ```
 # 0x14 = 20 in decimal, you may use whatever value you wish however
-
 # mark *connections* coming from the 'outside' world
+# 
+# Should be *before* KUBE-SERVICES
+# 1      625 37918 cali-PREROUTING  all  --  any    any     anywhere             anywhere             /* cali:6gwbT8clXdHdC1b1 */
+# 2        1    60 CONNMARK   all  --  any    any     anywhere             anywhere             match-set KUBE-LOAD-BALANCER dst,dst ! match-set cali40masq-ipam-pools src CONNMARK set 0x14
+# 3     537K   47M KUBE-SERVICES  all  --  any    any     anywhere             anywhere             /* kubernetes service portals */
+#
 iptables -t nat -I PREROUTING \
   -m set   --match-set KUBE-LOAD-BALANCER dst,dst \
   -m set ! --match-set cali40masq-ipam-pools src \
