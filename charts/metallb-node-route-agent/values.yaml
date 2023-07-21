@@ -57,12 +57,16 @@ podAnnotations: {}
 podSecurityContext: {}
   # fsGroup: 2000
 
+# system-node-critical
+priorityClassName: ""
+
 securityContext:
   capabilities:
     drop:
     - ALL
     add:
     - NET_ADMIN
+    - NET_RAW
 
 resources: {}
   # We usually recommend not to specify default resources and to leave this as a conscious

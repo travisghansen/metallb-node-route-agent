@@ -1,3 +1,9 @@
+# v0.4.2
+
+Released 2023-07-21
+
+- bump chart details
+
 # v0.4.1
 
 Released 2023-07-21
