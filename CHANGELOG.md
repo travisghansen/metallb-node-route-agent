@@ -1,3 +1,9 @@
+# v0.4.3
+
+Released 2023-07-21
+
+- use `exec` instead of `spawn`
+
 # v0.4.2
 
 Released 2023-07-21
