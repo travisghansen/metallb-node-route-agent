@@ -1,6 +1,5 @@
 const _ = require('lodash');
 const AsyncMutex = require('async-mutex');
-const cp = require('child_process');
 const fs = require('fs');
 const { IpAddress, IpRange } = require('cidr-calc');
 const IpCommand = require('./lib/ip').IpCommand;
@@ -19,12 +18,28 @@ const mutex = new AsyncMutex.Mutex();
 const MAX_RECONCILE_WAIT = process.env.MAX_RECONCILE_WAIT || 60 * 1000;
 
 // route table
-const TABLE_NAME = process.env.TABLE_NAME || 'metallb-nra';
 const TABLE_WEIGHT = process.env.TABLE_WEIGHT || 20;
-const TABLE_FILE = '/etc/iproute2/rt_tables';
+const TABLE_NAME = TABLE_WEIGHT;
 
 // rules
+const rule_props = { table: TABLE_NAME };
+const rule_args = [];
+
 const RULE_PRIORITY = process.env.RULE_PRIORITY || 20;
+rule_props['priority'] = RULE_PRIORITY;
+
+/**
+ * This value should be in hex format to match the output of the ip command
+ */
+const RULE_FWMARK = process.env.RULE_FWMARK;
+if (RULE_FWMARK) {
+  rule_props['fwmark'] = RULE_FWMARK;
+}
+
+// convert props to arg syntax for ease of use
+for (const property in rule_props) {
+  rule_args.push(property, rule_props[property]);
+}
 
 // route settings
 const PEER_WEIGHT = process.env.PEER_WEIGHT || 100;
@@ -55,6 +70,9 @@ let metallb_peers = [];
  * [ '192.168.57.0/24', '192.168.58.10-192.168.58.30' ]
  */
 let metallb_addresses = [];
+
+// used to keep references to all watch reqs
+const crd_watch_reqs = {};
 
 /**
  * pause program for given ms
@@ -116,17 +134,7 @@ async function reconcile() {
       //return;
 
       //////// step 1, create the routing table as appropriate /////////
-
-      let tableExists = await ip.tableExists(TABLE_NAME);
-      if (!tableExists) {
-        logger.info(
-          `adding route table ${TABLE_NAME} (${TABLE_WEIGHT}) to ${TABLE_FILE}`
-        );
-        // TODO: create table
-        fs.writeFileSync(TABLE_FILE, `\n${TABLE_WEIGHT}\t${TABLE_NAME}\n\n`, {
-          flag: 'a'
-        });
-      }
+      // using numeric value now so all tables implicitly exist already
 
       //////// step 2, populate the routing table as appropriate /////////
 
@@ -263,26 +271,16 @@ async function reconcile() {
       if (subnets.length > 0 && peers.length > 0) {
         // create a new routing rule for each relevant subnet
         for (const subnet of subnets) {
-          const lookup = {};
+          let lookup = {};
           lookup.src = subnet.split('/')[0];
           lookup.srclen = subnet.split('/')[1];
-          lookup.table = TABLE_NAME;
-          lookup.priority = RULE_PRIORITY;
+          lookup = Object.assign({}, lookup, rule_props);
 
           let matches = await ip.getRulesByProperties(lookup, TABLE_NAME);
 
           if (matches.length == 0) {
             logger.info('creating routing rule for subnet: %s', subnet);
-            args = [
-              'rule',
-              'add',
-              'from',
-              subnet,
-              'lookup',
-              TABLE_NAME,
-              'priority',
-              RULE_PRIORITY
-            ];
+            args = ['rule', 'add', 'from', subnet, ...rule_args];
             await ip.exec(args);
           }
 
@@ -311,22 +309,24 @@ async function reconcile() {
 
           let match = false;
           for (const subnet of subnets) {
-            const lookup = {};
+            let lookup = {};
             lookup.src = subnet.split('/')[0];
             lookup.srclen = subnet.split('/')[1];
-            lookup.table = TABLE_NAME;
-            lookup.priority = RULE_PRIORITY;
+            lookup = Object.assign({}, lookup, rule_props);
 
             // TODO: make this work with ipv6
             // fill in the missing srclen when it is /32
-            let r_srclen = rule.srclen || 32;
+            rule.srclen = rule.srclen || 32;
 
-            if (
-              rule.src == lookup.src &&
-              r_srclen == lookup.srclen &&
-              rule.table == lookup.table &&
-              rule.priority == lookup.priority
-            ) {
+            let rmatch = true;
+            for (const property in lookup) {
+              if (String(lookup[property]) != String(rule[property])) {
+                rmatch = false;
+                break;
+              }
+            }
+
+            if (rmatch) {
               match = true;
               break;
             }
@@ -371,7 +371,10 @@ async function reconcile() {
  *
  * @param {*} data
  */
-function processMetalLBConfigMapData(data) {
+async function processMetalLBConfigMapData(data) {
+  metallb_loaded = false;
+  await mutex.waitForUnlock();
+
   let peers = [];
   let peer_data = _.get(data, 'peers', []);
   for (let peer of peer_data) {
@@ -408,14 +411,14 @@ function processMetalLBConfigMapData(data) {
 async function setupMetalLBStaticFileWatch() {
   logger.info(`starting watch static file ${METALLB_STATIC_FILE}`);
   const staticFilePath = METALLB_STATIC_FILE;
-  setInterval(function () {
+  setInterval(async function () {
     logger.verbose('refresh metallb addresses');
     let data = fs.readFileSync(staticFilePath, {
       encoding: 'utf8',
       flag: 'r'
     });
     data = yaml.load(data);
-    processMetalLBConfigMapData(data);
+    await processMetalLBConfigMapData(data);
   }, METALLB_STATIC_FILE_WAIT);
 }
 
@@ -470,21 +473,21 @@ async function setupMetalLBConfigMapWatch() {
   watch.watch(
     `/api/v1/watch/namespaces/${ns}/configmaps/${cf}`,
     {},
-    (type, apiObj, watchObj) => {
+    async (type, apiObj, watchObj) => {
       switch (type) {
         case 'ADDED':
         case 'MODIFIED': {
           logger.info('metallb configmap added/modified');
           let data = _.get(apiObj, 'data.config', '{}');
           data = yaml.load(data);
-          processMetalLBConfigMapData(data);
-          reconcile();
+          await processMetalLBConfigMapData(data);
+          await reconcile();
           break;
         }
         case 'DELETED':
           logger.warn('metallb configmap deleted from watch');
-          processMetalLBConfigMapData({});
-          reconcile();
+          await processMetalLBConfigMapData({});
+          await reconcile();
           break;
         case 'BOOKMARK':
           logger.verbose(
@@ -519,6 +522,8 @@ async function setupMetalLBConfigMapWatch() {
 
 async function processMetalLBCRDData() {
   metallb_loaded = false;
+  await mutex.waitForUnlock();
+
   metallb_peers = [];
   metallb_addresses = [];
 
@@ -617,7 +622,18 @@ async function setupMetalLBCRDsWatch() {
     logger.info(
       `starting ${resourcePath} watch at resourceVersion=${resourceVersion}`
     );
-    watch.watch(
+
+    if (crd_watch_reqs[resourcePath]) {
+      try {
+        logger.verbose(`closing existing watch: ${resourcePath}`);
+        let req = await crd_watch_reqs[resourcePath];
+        req.abort();
+      } finally {
+        // noop
+      }
+    }
+
+    crd_watch_reqs[resourcePath] = watch.watch(
       `${resourcePath}?resourceVersion=${resourceVersion}`,
       {},
       async (type, apiObj, watchObj) => {
@@ -674,7 +690,18 @@ async function setupMetalLBCRDsWatch() {
     logger.info(
       `starting ${resourcePath} watch at resourceVersion=${resourceVersion}`
     );
-    watch.watch(
+
+    if (crd_watch_reqs[resourcePath]) {
+      try {
+        logger.verbose(`closing existing watch: ${resourcePath}`);
+        let req = await crd_watch_reqs[resourcePath];
+        req.abort();
+      } finally {
+        // noop
+      }
+    }
+
+    crd_watch_reqs[resourcePath] = watch.watch(
       `${resourcePath}?resourceVersion=${resourceVersion}`,
       {},
       async (type, apiObj, watchObj) => {
@@ -745,16 +772,6 @@ const crd_resources = [];
     // flush table
     logger.info(`flushing route table: ${TABLE_NAME}`);
     await ip.flushTable(TABLE_NAME);
-
-    // delete table from rt_routes
-    // sed -i '/^20\s/d' filepath
-    let command = `sed -i '/^${TABLE_WEIGHT}\\s/d' ${TABLE_FILE}`;
-    logger.info(
-      `running command to remove table from %s: %s`,
-      TABLE_FILE,
-      command
-    );
-    cp.execSync(command);
 
     process.exit(0);
   }

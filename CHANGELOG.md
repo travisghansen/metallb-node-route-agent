@@ -1,8 +1,17 @@
+# v0.4.0
+
+Released 2023-07-20
+
+- remove management of `TABLE_NAME` in `/etc/iproute2/rt_tables`
+- better management of watches to unsubscribe when appropriate
+- more robust reconcile logic to prevent race conditions
+
 # v0.3.2
 
 Released 2023-07-12
 
-- proer support for `nodeSelectors` in the CRDs (ie: limit upstream routes to only those applicable to the given node)
+- proer support for `nodeSelectors` in the CRDs (ie: limit upstream routes to
+  only those applicable to the given node)
 - update chart to support new rbac neccessary for node logic
 
 # v0.3.1

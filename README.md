@@ -31,8 +31,6 @@ your nodes have the sysctl `net.ipv4.fib_multipath_use_neigh` set to `1`.
   - default: 60s
   - minimum value is 1s
   - `0` disables the feature
-- `TABLE_NAME` - name of the routing table to manage
-  - default: `metallb-nra`
 - `TABLE_WEIGHT` - weight of the routing table to manage
   - default: `20`
 - `PEER_WEIGHT` - weight of each peer added to the routing table
@@ -40,6 +38,9 @@ your nodes have the sysctl `net.ipv4.fib_multipath_use_neigh` set to `1`.
   - all peers have the same weight currently so not super helpful to modify
 - `RULE_PRIORITY` - the priority to give to the managed rules
   - default: 20
+- `RULE_FWMARK` - the fwmark to give to the managed rules (show be provided in
+  hex format exactly as the `ip` output shows)
+  - default: unset
 - `DESTINATION` - the `dst` network of the rule
   - default: `default`
 - `METALLB_NAMESPACE` - namespace where `metallb` is running
@@ -56,6 +57,37 @@ your nodes have the sysctl `net.ipv4.fib_multipath_use_neigh` set to `1`.
   process will exit
 - `ONESHOT` - if equals `1` then then reconciliation will complete once and the
   process will exit (useful as a cronjob for example)
+
+# CNI
+
+## cilium
+
+This project 'just works' with cilium if using hte kube-proxy replacement feature.
+
+## calico
+
+If using with calico you must run `kube-proxy` in `ipvs` mode. In addition it
+will likely require very special firewall rules to ensure proper traffic flows.
+
+Without the rules etc below undesirable traffic flows will occur and
+functionality will likely break. Namely Pod (both CNI and HostNetwork) traffic
+may end up routing to BGP Peers instead of staying local to the cluster.
+
+```
+# 0x14 = 20 in decimal, you may use whatever value you wish however
+
+# mark *connections* coming from the 'outside' world
+iptables -t nat -I PREROUTING \
+  -m set   --match-set KUBE-LOAD-BALANCER dst,dst \
+  -m set ! --match-set cali40masq-ipam-pools src \
+  -j CONNMARK --set-mark 0x14
+
+# copy *connection* mark to *packet* mark *before* POSTROUTING/SNAT takes place
+iptables -t mangle -I FORWARD -m connmark --mark 0x14 -j CONNMARK --restore-mark
+
+# ensure proper env vars for metallb-nra
+RULE_FWMARK=0x14
+```
 
 # development
 
