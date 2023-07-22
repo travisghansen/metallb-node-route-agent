@@ -1,3 +1,10 @@
+# v0.4.5
+
+Released 2023-07-22
+
+- use `spawn` again for `ip` commands
+- additional packages installed in container image
+
 # v0.4.4
 
 Released 2023-07-21

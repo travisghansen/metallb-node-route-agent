@@ -387,7 +387,7 @@ async function reconcile() {
         }
       }
 
-      logger.verbose('reconcile finished');
+      logger.info('reconcile finished');
       if (process.env.ONESHOT == '1') {
         logger.info('exiting due to ONESHOT');
         process.exit(0);
