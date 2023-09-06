@@ -1,3 +1,9 @@
+# v0.4.6
+
+Released 2023-09-06
+
+- properly handle advertisements which no selectors/pools
+
 # v0.4.5
 
 Released 2023-07-22

@@ -607,7 +607,7 @@ async function processMetalLBCRDData() {
       peerAllowed = false;
       let i = 0;
       do {
-        logger.debug(`asserting labelSelector %j`, nodeSelectors[i]);
+        logger.debug(`asserting peer labelSelector %j`, nodeSelectors[i]);
         peerAllowed = await kc.assertLabelSelector(node, nodeSelectors[i]);
         i++;
       } while (!peerAllowed && i < nodeSelectors.length);
@@ -627,15 +627,70 @@ async function processMetalLBCRDData() {
    * NOTE: purposely ignoring spec.nodeSelectors here for DSR-like scenarios
    */
   for (const advertisement of advertisements) {
-    for (const poolName of advertisement.spec.ipAddressPools) {
-      for (const pool of pools) {
-        if (poolName == pool.metadata.name) {
-          metallb_addresses.push(...pool.spec.addresses);
+    let add_all = false;
+
+    const ipAddressPools = _.get(advertisement, 'spec.ipAddressPools', []);
+    const ipAddressPoolSelectors = _.get(
+      advertisement,
+      'spec.ipAddressPoolSelectors',
+      []
+    );
+
+    // empty selectors means select all pools
+    if (!ipAddressPools && !ipAddressPoolSelectors) {
+      add_all = true;
+    }
+
+    if (!add_all) {
+      // NOTE: ipAddressPools and ipAddressPoolSelectors are combined logically so if *either* passes the pool should be included
+
+      if (ipAddressPools.length > 0) {
+        for (const poolName of ipAddressPools) {
+          for (const pool of pools) {
+            if (poolName == pool.metadata.name) {
+              metallb_addresses.push(...pool.spec.addresses);
+            }
+          }
         }
+      }
+
+      if (ipAddressPoolSelectors.length > 0) {
+        for (const pool of pools) {
+          let poolAllowed = false;
+          let i = 0;
+          do {
+            logger.debug(
+              `asserting pool labelSelector %j`,
+              ipAddressPoolSelectors[i]
+            );
+            poolAllowed = await kc.assertLabelSelector(
+              pool,
+              ipAddressPoolSelectors[i]
+            );
+            i++;
+          } while (!poolAllowed && i < ipAddressPoolSelectors.length);
+
+          if (poolAllowed) {
+            metallb_addresses.push(...pool.spec.addresses);
+          } else {
+            logger.debug(
+              `pool %s does not match ipAddressPoolSelectors`,
+              pool.metadata.name
+            );
+          }
+        }
+      }
+    }
+
+    if (add_all) {
+      for (const pool of pools) {
+        metallb_addresses.push(...pool.spec.addresses);
       }
     }
   }
 
+  metallb_peers = [...new Set(metallb_peers)];
+  metallb_addresses = [...new Set(metallb_addresses)];
   metallb_loaded = true;
 }
 
