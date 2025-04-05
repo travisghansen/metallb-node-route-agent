@@ -1,8 +1,14 @@
+# v0.4.7
+
+Released 2025-04-04
+
+- disable hard-coded node args so they can be managed via env var
+
 # v0.4.6
 
 Released 2023-09-06
 
-- properly handle advertisements which no selectors/pools
+- properly handle advertisements with no selectors/pools
 
 # v0.4.5
 

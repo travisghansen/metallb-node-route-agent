@@ -4,7 +4,7 @@
   "description": "manage node routes",
   "main": "agent.js",
   "scripts": {
-    "start": "node --nouse-idle-notification --expose-gc --max-old-space-size=8192 agent.js",
+    "start": "node agent.js",
     "eslint": "eslint .",
     "prettier": "prettier --config .prettierrc.js '**/*.js' --write"
   },
