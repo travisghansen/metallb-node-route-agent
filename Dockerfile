@@ -1,4 +1,4 @@
-FROM node:hydrogen-bookworm-slim AS build
+FROM node:iron-bookworm-slim AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -19,7 +19,7 @@ COPY . .
 ######################
 # actual image
 ######################
-FROM node:hydrogen-bookworm-slim
+FROM node:iron-bookworm-slim
 
 LABEL org.opencontainers.image.source https://github.com/travisghansen/metallb-node-route-agent
 
