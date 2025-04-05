@@ -26,7 +26,6 @@
     "js-yaml": "^4.1.0",
     "lodash": "^4.17.21",
     "lru-cache": "^7.14.1",
-    "netlink": "^0.2.2",
     "query-string": "^7.1.3",
     "request": "^2.88.2",
     "uri-js": "^4.4.1",
