@@ -1,3 +1,9 @@
+# v0.4.8
+
+Released 2025-05-05
+
+- remove unused deps
+
 # v0.4.7
 
 Released 2025-04-04
