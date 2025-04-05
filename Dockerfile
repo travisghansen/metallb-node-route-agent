@@ -1,3 +1,4 @@
+# docker buildx build --platform linux/amd64,linux/arm64 .
 FROM node:iron-bookworm-slim AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -8,7 +9,7 @@ ARG BUILDPLATFORM
 RUN echo "I am running build on $BUILDPLATFORM, building for $TARGETPLATFORM"
 
 # install build deps
-RUN apt-get update && apt-get install -y python3 make cmake gcc g++
+#RUN apt-get update && apt-get install -y python3 make cmake gcc g++
 
 WORKDIR /app
 
