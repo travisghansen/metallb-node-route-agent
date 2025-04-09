@@ -34,7 +34,7 @@ RUN echo "I am running on final $BUILDPLATFORM, building for $TARGETPLATFORM"
 
 RUN apt-get update && \
     cd ~ && \
-    apt-get install -y iproute2 xz-utils conntrack ipset iptables wget curl jq less ipvsadm telnet dnsutils && \
+    apt-get install -y iproute2 xz-utils conntrack ipset iptables wget curl jq less ipvsadm telnet dnsutils netcat-openbsd net-tools && \
     wget -c https://xyne.dev/projects/idemptables/src/idemptables-2012.tar.xz -O - | tar -Jxv && \
     install -o root -g root -m 0755 idemptables-2012/idemptables /usr/sbin/idemptables && \
     rm -rf idemptables-2012/ && \

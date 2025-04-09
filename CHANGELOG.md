@@ -1,6 +1,12 @@
+# v0.4.9
+
+Released 2025-04-09
+
+- additional utilities in the image
+
 # v0.4.8
 
-Released 2025-05-05
+Released 2025-04-05
 
 - remove unused deps
 
