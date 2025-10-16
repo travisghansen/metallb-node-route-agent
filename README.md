@@ -25,6 +25,11 @@ container.
 Additionally if you have multiple paths (bgp peers) you likely want to ensure
 your nodes have the sysctl `net.ipv4.fib_multipath_use_neigh` set to `1`.
 
+If you would like to remain peered to the `BGPPeer` but prefer _not_ to have a
+specific `BGPPeer` included in the routing table you can add the label:
+`metallb-nra/enabled: "false"` to the `BGPPeer`. This can be temporary,
+permanent, or dynamic based on some external health checks etc.
+
 ## env vars
 
 - `MAX_RECONCILE_WAIT` - a timer is setup on this interval (ms) to reconcile
@@ -82,7 +87,7 @@ may end up routing to BGP Peers instead of staying local to the cluster.
 ```
 # 0x14 = 20 in decimal, you may use whatever value you wish however
 # mark *connections* coming from the 'outside' world
-# 
+#
 # Should be *before* KUBE-SERVICES
 # 1      625 37918 cali-PREROUTING  all  --  any    any     anywhere             anywhere             /* cali:6gwbT8clXdHdC1b1 */
 # 2        1    60 CONNMARK   all  --  any    any     anywhere             anywhere             match-set KUBE-LOAD-BALANCER dst,dst ! match-set cali40masq-ipam-pools src CONNMARK set 0x14

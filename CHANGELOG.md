@@ -1,3 +1,11 @@
+# v0.4.10
+
+Released 2025-10-16
+
+- support setting `metallb-nra/enabled: "false"` label on `BGPPeer` to
+  arbitrarily exclude from route table
+- add `ping` command to the image
+
 # v0.4.9
 
 Released 2025-04-09

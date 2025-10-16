@@ -609,17 +609,33 @@ async function processMetalLBCRDData() {
       do {
         logger.debug(`asserting peer labelSelector %j`, nodeSelectors[i]);
         peerAllowed = await kc.assertLabelSelector(node, nodeSelectors[i]);
+        if (!peerAllowed) {
+          logger.info(
+            `ignoring peer %s due to nodeSelectors`,
+            peer.spec.peerAddress
+          );
+        }
         i++;
       } while (!peerAllowed && i < nodeSelectors.length);
     }
 
     if (peerAllowed) {
+      let label = 'metallb-nra/enabled';
+      let labels = _.get(peer, 'metadata.labels', {});
+      if (label in labels) {
+        let enabled = labels[label];
+        if (['0', 'false', 'no'].includes(enabled)) {
+          peerAllowed = false;
+          logger.info(
+            `ignoring peer %s due to ${label} label`,
+            peer.spec.peerAddress
+          );
+        }
+      }
+    }
+
+    if (peerAllowed) {
       metallb_peers.push(peer.spec.peerAddress);
-    } else {
-      logger.info(
-        `ignoring peer %s due to nodeSelectors`,
-        peer.spec.peerAddress
-      );
     }
   }
 
