@@ -70,6 +70,9 @@ let metallb_loaded = false;
  */
 let metallb_peers = [];
 
+// { "<ip>": <weight>}
+let metallb_peer_weights = {};
+
 /**
  * [ '192.168.57.0/24', '192.168.58.10-192.168.58.30' ]
  */
@@ -98,6 +101,10 @@ function sleep(ms) {
 async function getPeers() {
   //return ["172.29.0.1", "172.29.0.2"];
   return metallb_peers;
+}
+
+async function getPeerWeights() {
+  return metallb_peer_weights;
 }
 
 /**
@@ -160,6 +167,8 @@ async function reconcile() {
 
       let peers = await getPeers();
       peers = [...new Set(peers)];
+      let peer_weights = await getPeerWeights();
+      peer_weights = Object.assign({}, peer_weights);
 
       // if peers is empty, both the table and the rules entries should be wiped out
       if (peers.length > 0) {
@@ -219,7 +228,13 @@ async function reconcile() {
           );
           args = ['route', 'replace', DESTINATION, 'table', TABLE_NAME];
           for (const peer of peers) {
-            args.push('nexthop', 'via', peer, 'weight', PEER_WEIGHT);
+            args.push(
+              'nexthop',
+              'via',
+              peer,
+              'weight',
+              peer_weights[peer] ? peer_weights[peer] : PEER_WEIGHT
+            );
           }
           await ip.exec(args);
         } else {
@@ -561,6 +576,7 @@ async function processMetalLBCRDData() {
   await mutex.waitForUnlock();
 
   metallb_peers = [];
+  metallb_peer_weights = {};
   metallb_addresses = [];
 
   let ns = await getMetalLBNamespace();
@@ -592,6 +608,7 @@ async function processMetalLBCRDData() {
   );
 
   for (const peer of peers) {
+    let labels = _.get(peer, 'metadata.labels', {});
     let peerAllowed = true;
 
     // https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#resources-that-support-set-based-requirements
@@ -621,7 +638,6 @@ async function processMetalLBCRDData() {
 
     if (peerAllowed) {
       let label = 'metallb-nra/enabled';
-      let labels = _.get(peer, 'metadata.labels', {});
       if (label in labels) {
         let enabled = labels[label];
         if (['0', 'false', 'no'].includes(enabled)) {
@@ -635,7 +651,26 @@ async function processMetalLBCRDData() {
     }
 
     if (peerAllowed) {
-      metallb_peers.push(peer.spec.peerAddress);
+      let label = 'metallb-nra/address';
+      let address = peer.spec.peerAddress;
+      if (label in labels) {
+        address = labels[label];
+        logger.info(
+          `rewriting peer (%s) address from %s to %s due to ${label} label`,
+          peer.metadata.name,
+          peer.spec.peerAddress,
+          labels[label]
+        );
+      }
+
+      label = 'metallb-nra/weight';
+      if (label in labels) {
+        // TODO: there currently is no way to query the weight which make comparison impossible
+        // disabling for now until a proper solution is in place
+        // metallb_peer_weights[address] = labels[label];
+      }
+
+      metallb_peers.push(address);
     }
   }
 

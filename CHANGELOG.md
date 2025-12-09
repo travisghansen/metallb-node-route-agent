@@ -1,3 +1,10 @@
+# v0.4.11
+
+Released 2025-12-08
+
+- support setting `metallb-nra/address: "<ip>"` label on `BGPPeer` to
+  arbitrarily alter route table (for example if 2 peers share a vip)
+
 # v0.4.10
 
 Released 2025-10-16
