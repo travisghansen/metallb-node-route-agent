@@ -81,6 +81,19 @@ let metallb_addresses = [];
 // used to keep references to all watch reqs
 const crd_watch_reqs = {};
 
+// tracks watches being intentionally aborted (to prevent cascade restarts)
+const intentionalAborts = new Set();
+
+// debounced reconcile to coalesce rapid watch events
+let reconcileTimer = null;
+function scheduleReconcile() {
+  if (reconcileTimer) clearTimeout(reconcileTimer);
+  reconcileTimer = setTimeout(() => {
+    reconcileTimer = null;
+    reconcile();
+  }, 1000);
+}
+
 /**
  * pause program for given ms
  *
@@ -572,12 +585,11 @@ async function setupMetalLBConfigMapWatch() {
 }
 
 async function processMetalLBCRDData() {
-  metallb_loaded = false;
   await mutex.waitForUnlock();
 
-  metallb_peers = [];
-  metallb_peer_weights = {};
-  metallb_addresses = [];
+  let newPeers = [];
+  let newPeerWeights = {};
+  let newAddresses = [];
 
   let ns = await getMetalLBNamespace();
 
@@ -667,10 +679,10 @@ async function processMetalLBCRDData() {
       if (label in labels) {
         // TODO: there currently is no way to query the weight which make comparison impossible
         // disabling for now until a proper solution is in place
-        // metallb_peer_weights[address] = labels[label];
+        // newPeerWeights[address] = labels[label];
       }
 
-      metallb_peers.push(address);
+      newPeers.push(address);
     }
   }
 
@@ -699,7 +711,7 @@ async function processMetalLBCRDData() {
         for (const poolName of ipAddressPools) {
           for (const pool of pools) {
             if (poolName == pool.metadata.name) {
-              metallb_addresses.push(...pool.spec.addresses);
+              newAddresses.push(...pool.spec.addresses);
             }
           }
         }
@@ -722,7 +734,7 @@ async function processMetalLBCRDData() {
           } while (!poolAllowed && i < ipAddressPoolSelectors.length);
 
           if (poolAllowed) {
-            metallb_addresses.push(...pool.spec.addresses);
+            newAddresses.push(...pool.spec.addresses);
           } else {
             logger.debug(
               `pool %s does not match ipAddressPoolSelectors`,
@@ -735,14 +747,104 @@ async function processMetalLBCRDData() {
 
     if (add_all) {
       for (const pool of pools) {
-        metallb_addresses.push(...pool.spec.addresses);
+        newAddresses.push(...pool.spec.addresses);
       }
     }
   }
 
-  metallb_peers = [...new Set(metallb_peers)];
-  metallb_addresses = [...new Set(metallb_addresses)];
+  // atomic swap — only update globals after all data is successfully fetched
+  metallb_peers = [...new Set(newPeers)];
+  metallb_peer_weights = newPeerWeights;
+  metallb_addresses = [...new Set(newAddresses)];
   metallb_loaded = true;
+}
+
+/**
+ * start (or restart) a single watch
+ */
+async function startSingleWatch(resourcePath, isNodeWatch) {
+  const resourceVersion = await kc.getCurrentResourceVersion(resourcePath);
+  const watch = new k8s.Watch(kc);
+
+  logger.info(
+    `starting ${resourcePath} watch at resourceVersion=${resourceVersion}`
+  );
+
+  if (crd_watch_reqs[resourcePath]) {
+    try {
+      intentionalAborts.add(resourcePath);
+      logger.verbose(`closing existing watch: ${resourcePath}`);
+      let req = await crd_watch_reqs[resourcePath];
+      req.abort();
+    } catch (e) {
+      // noop
+    }
+  }
+
+  crd_watch_reqs[resourcePath] = watch.watch(
+    `${resourcePath}?resourceVersion=${resourceVersion}`,
+    {},
+    async (type, _apiObj, watchObj) => {
+      if (isNodeWatch) {
+        if (_.get(watchObj, 'object.metadata.name') != NODE_NAME) {
+          logger.debug('ignoring node update because non-matching node');
+          return;
+        }
+      }
+
+      switch (type) {
+        case 'ADDED':
+        case 'MODIFIED': {
+          logger.info(`${resourcePath} added/modified`);
+          await processMetalLBCRDData();
+          scheduleReconcile();
+          break;
+        }
+        case 'DELETED':
+          logger.warn(`${resourcePath} deleted from watch`);
+          await processMetalLBCRDData();
+          scheduleReconcile();
+          break;
+        case 'BOOKMARK':
+          logger.verbose(
+            `${resourcePath} bookmarked: ${watchObj.metadata.resourceVersion}`
+          );
+          break;
+        default:
+          logger.error(`unknown operation on ${resourcePath} watch: %s`, type);
+          break;
+      }
+    },
+    async e => {
+      if (intentionalAborts.has(resourcePath)) {
+        intentionalAborts.delete(resourcePath);
+        logger.verbose(`ignoring intentional abort for ${resourcePath}`);
+        return;
+      }
+
+      if (e) {
+        logger.error('watch failure for %s: %s', resourcePath, e);
+        if (e.code === 'ECONNREFUSED') {
+          process.exit(1);
+        }
+      } else {
+        logger.info('failed to start watch %s', resourcePath);
+      }
+
+      await sleep(5000);
+      try {
+        await startSingleWatch(resourcePath, isNodeWatch);
+        await processMetalLBCRDData();
+        scheduleReconcile();
+      } catch (restartErr) {
+        logger.error(
+          'failed to restart watch for %s: %s',
+          resourcePath,
+          restartErr
+        );
+      }
+    }
+  );
 }
 
 /**
@@ -758,142 +860,14 @@ async function setupMetalLBCRDsWatch() {
 
   for (const resource of crd_resources) {
     const resourcePath = `/apis/${resource.groupVersion}${nsPath}/${resource.name}`;
-    const resourceVersion = await kc.getCurrentResourceVersion(resourcePath);
-    const watch = new k8s.Watch(kc);
-
-    logger.info(
-      `starting ${resourcePath} watch at resourceVersion=${resourceVersion}`
-    );
-
-    if (crd_watch_reqs[resourcePath]) {
-      try {
-        logger.verbose(`closing existing watch: ${resourcePath}`);
-        let req = await crd_watch_reqs[resourcePath];
-        req.abort();
-      } finally {
-        // noop
-      }
-    }
-
-    crd_watch_reqs[resourcePath] = watch.watch(
-      `${resourcePath}?resourceVersion=${resourceVersion}`,
-      {},
-      async (type, apiObj, watchObj) => {
-        switch (type) {
-          case 'ADDED':
-          case 'MODIFIED': {
-            logger.info(`${resourcePath} added/modified`);
-            await processMetalLBCRDData();
-            await reconcile();
-            break;
-          }
-          case 'DELETED':
-            logger.warn(`${resourcePath} deleted from watch`);
-            await processMetalLBCRDData();
-            await reconcile();
-            break;
-          case 'BOOKMARK':
-            logger.verbose(
-              `${resourcePath} bookmarked: ${watchObj.metadata.resourceVersion}`
-            );
-            break;
-          default:
-            logger.error(
-              `unknown operation on ${resourcePath} watch: %s`,
-              type
-            );
-            break;
-        }
-      },
-      async e => {
-        metallb_loaded = false;
-        if (e) {
-          logger.error('watch failure: %s', e);
-          switch (e.code) {
-            case 'ECONNREFUSED':
-              process.exit(1);
-          }
-        } else {
-          logger.info('watch timeout');
-        }
-
-        await sleep(5000);
-        setupMetalLBCRDsWatch();
-      }
-    );
+    await startSingleWatch(resourcePath, false);
   }
 
   if (NODE_NAME) {
     // watching a specific node fails for some reason with the js client
     //const resourcePath = `/api/v1/nodes/${NODE_NAME}`;
     const resourcePath = `/api/v1/nodes`;
-    const resourceVersion = await kc.getCurrentResourceVersion(resourcePath);
-    const watch = new k8s.Watch(kc);
-    logger.info(
-      `starting ${resourcePath} watch at resourceVersion=${resourceVersion}`
-    );
-
-    if (crd_watch_reqs[resourcePath]) {
-      try {
-        logger.verbose(`closing existing watch: ${resourcePath}`);
-        let req = await crd_watch_reqs[resourcePath];
-        req.abort();
-      } finally {
-        // noop
-      }
-    }
-
-    crd_watch_reqs[resourcePath] = watch.watch(
-      `${resourcePath}?resourceVersion=${resourceVersion}`,
-      {},
-      async (type, apiObj, watchObj) => {
-        if (_.get(watchObj, 'object.metadata.name') != NODE_NAME) {
-          logger.debug('ignoring node update because non-matching node');
-          return;
-        }
-
-        switch (type) {
-          case 'ADDED':
-          case 'MODIFIED': {
-            logger.info(`${resourcePath} added/modified`);
-            await processMetalLBCRDData();
-            await reconcile();
-            break;
-          }
-          case 'DELETED':
-            logger.warn(`${resourcePath} deleted from watch`);
-            await processMetalLBCRDData();
-            await reconcile();
-            break;
-          case 'BOOKMARK':
-            logger.verbose(
-              `${resourcePath} bookmarked: ${watchObj.metadata.resourceVersion}`
-            );
-            break;
-          default:
-            logger.error(
-              `unknown operation on ${resourcePath} watch: %s`,
-              type
-            );
-            break;
-        }
-      },
-      async e => {
-        metallb_loaded = false;
-        if (e) {
-          logger.error('watch failure: %s', e);
-          switch (e.code) {
-            case 'ECONNREFUSED':
-              process.exit(1);
-          }
-        } else {
-          logger.info('watch timeout');
-        }
-
-        await sleep(5000);
-        setupMetalLBCRDsWatch();
-      }
-    );
+    await startSingleWatch(resourcePath, true);
   }
 
   await processMetalLBCRDData();
