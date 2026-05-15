@@ -4,7 +4,6 @@ const AsyncMutex = require('async-mutex');
 const fs = require('fs');
 const { IpAddress, IpRange } = require('cidr-calc');
 const IpCommand = require('./lib/ip').IpCommand;
-const k8s = require('@kubernetes/client-node');
 const KubeConfig = require('./lib/k8s').KubeConfig;
 const logger = require('./lib/logger').logger;
 const yaml = require('js-yaml');
@@ -78,21 +77,10 @@ let metallb_peer_weights = {};
  */
 let metallb_addresses = [];
 
-// used to keep references to all watch reqs
-const crd_watch_reqs = {};
+// TODO: use this
+//let inflight_watches = {};
 
-// tracks watches being intentionally aborted (to prevent cascade restarts)
-const intentionalAborts = new Set();
-
-// debounced reconcile to coalesce rapid watch events
-let reconcileTimer = null;
-function scheduleReconcile() {
-  if (reconcileTimer) clearTimeout(reconcileTimer);
-  reconcileTimer = setTimeout(() => {
-    reconcileTimer = null;
-    reconcile();
-  }, 1000);
-}
+const watches = {};
 
 /**
  * pause program for given ms
@@ -136,11 +124,25 @@ async function getAddresses() {
 
 /**
  * run the reconciliation loop with mutex to prevent overlapping
+ *
+ * this process is technically independent from any updated metallb/cluster
+ * data as nodes may have out of band logic erroneously messing with the
+ * routing table
  */
-async function reconcile() {
+async function _reconcile() {
   logger.verbose('reconcile invoked');
   // cancel any pending
   mutex.cancel();
+
+  // immediately make copies of global vars to avoid race conditions
+  let peers = await getPeers();
+  peers = [...new Set(peers)];
+
+  let peer_weights = await getPeerWeights();
+  peer_weights = Object.assign({}, peer_weights);
+
+  let addresses = await getAddresses();
+  addresses = [...new Set(addresses)];
 
   // run exclusive
   try {
@@ -177,11 +179,6 @@ async function reconcile() {
       // using numeric value now so all tables implicitly exist already
 
       //////// step 2, populate the routing table as appropriate /////////
-
-      let peers = await getPeers();
-      peers = [...new Set(peers)];
-      let peer_weights = await getPeerWeights();
-      peer_weights = Object.assign({}, peer_weights);
 
       // if peers is empty, both the table and the rules entries should be wiped out
       if (peers.length > 0) {
@@ -275,7 +272,6 @@ async function reconcile() {
 
       //////// step 3, manage routing rules instructing usage of the routing table as appropriate /////////
 
-      let addresses = await getAddresses();
       let subnets = [];
       for (const address of addresses) {
         // sanity check cidr entries
@@ -430,6 +426,13 @@ async function reconcile() {
   }
 }
 
+// NOTE: if all previous runs complete in less than the throttle period then
+// this may invoke more frequently than the period
+const reconcile = _.throttle(_reconcile, 1000 * 3, {
+  leading: true,
+  trailing: true
+});
+
 /**
  * setup peers and addresses
  *
@@ -533,7 +536,7 @@ async function setupMetalLBConfigMapWatch() {
 
   logger.info(`starting watch on k8s configmap ${ns}/${cf}`);
 
-  const watch = new k8s.Watch(kc);
+  const watch = kc.createWatch();
   watch.watch(
     `/api/v1/watch/namespaces/${ns}/configmaps/${cf}`,
     {},
@@ -584,7 +587,10 @@ async function setupMetalLBConfigMapWatch() {
   );
 }
 
-async function processMetalLBCRDData() {
+/**
+ * purpose of this function is to populate the global vars of peers etc so when reconcile happens it has valid/fresh data
+ */
+async function _processMetalLBCRDData(options = {}) {
   await mutex.waitForUnlock();
 
   let newPeers = [];
@@ -757,35 +763,65 @@ async function processMetalLBCRDData() {
   metallb_peer_weights = newPeerWeights;
   metallb_addresses = [...new Set(newAddresses)];
   metallb_loaded = true;
+
+  // NOTE: this is here to make 'trailing' invocations atomic
+  if (options.reconcile) {
+    await reconcile();
+  }
 }
 
+const processMetalLBCRDData = _.throttle(_processMetalLBCRDData, 1000 * 5, {
+  leading: true,
+  trailing: true
+});
+
 /**
- * start (or restart) a single watch
+ * create new watch
  */
-async function startSingleWatch(resourcePath, isNodeWatch) {
-  const resourceVersion = await kc.getCurrentResourceVersion(resourcePath);
-  const watch = new k8s.Watch(kc);
+async function createWatch(resourcePath) {
+  // TODO: add inflight logic here
+  const watch = kc.createWatch();
 
-  logger.info(
-    `starting ${resourcePath} watch at resourceVersion=${resourceVersion}`
-  );
-
-  if (crd_watch_reqs[resourcePath]) {
+  if (watches[resourcePath]) {
     try {
-      intentionalAborts.add(resourcePath);
       logger.verbose(`closing existing watch: ${resourcePath}`);
-      let req = await crd_watch_reqs[resourcePath];
-      req.abort();
+      let watch = await watches[resourcePath];
+      if (watch && watch.abortController) {
+        watch.abortController.abort();
+      }
     } catch (e) {
       // noop
     }
   }
 
-  crd_watch_reqs[resourcePath] = watch.watch(
-    `${resourcePath}?resourceVersion=${resourceVersion}`,
+  // TODO: when resourceVersion is present the watch return value promise
+  // (abort controller) does not resolve until the first message is received
+  // const resourceVersion = await kc.getCurrentResourceVersion(resourcePath);
+  // const resourceVersion = 0;
+  // let reesourceVersionParam = `resourceVersion=${resourceVersion}`;
+  // if (!resourcePath.includes('?')) {
+  //   reesourceVersionParam = `?${reesourceVersionParam}`;
+  // } else {
+  //   reesourceVersionParam = `&${reesourceVersionParam}`;
+  // }
+
+  // let watchURL = `${resourcePath}${reesourceVersionParam}`;
+  let watchURL = `${resourcePath}`;
+
+  logger.info(`starting ${resourcePath} watch at ${watchURL}`);
+
+  // set some useful items for future reference on the watch itself
+  watch.resourcePath = resourcePath;
+  watch.watchURL = watchURL;
+  watch.abortController = await watch.watch(
+    `${watchURL}`,
     {},
     async (type, _apiObj, watchObj) => {
-      if (isNodeWatch) {
+      watch.lastActivity = new Date();
+      if (
+        _.get(watchObj, 'object.apiVersion') == 'v1' &&
+        _.get(watchObj, 'object.kind') == 'Node'
+      ) {
         if (_.get(watchObj, 'object.metadata.name') != NODE_NAME) {
           logger.debug('ignoring node update because non-matching node');
           return;
@@ -796,14 +832,12 @@ async function startSingleWatch(resourcePath, isNodeWatch) {
         case 'ADDED':
         case 'MODIFIED': {
           logger.info(`${resourcePath} added/modified`);
-          await processMetalLBCRDData();
-          scheduleReconcile();
+          await processMetalLBCRDData({ reconcile: true });
           break;
         }
         case 'DELETED':
           logger.warn(`${resourcePath} deleted from watch`);
-          await processMetalLBCRDData();
-          scheduleReconcile();
+          await processMetalLBCRDData({ reconcile: true });
           break;
         case 'BOOKMARK':
           logger.verbose(
@@ -816,41 +850,56 @@ async function startSingleWatch(resourcePath, isNodeWatch) {
       }
     },
     async e => {
-      if (intentionalAborts.has(resourcePath)) {
-        intentionalAborts.delete(resourcePath);
-        logger.verbose(`ignoring intentional abort for ${resourcePath}`);
-        return;
-      }
-
       if (e) {
+        // if (!String(e).includes('The user aborted a request')) {
+        //   logger.error('watch failure for %s: %s', resourcePath, e);
+        // }
+
         logger.error('watch failure for %s: %s', resourcePath, e);
-        if (e.code === 'ECONNREFUSED') {
-          process.exit(1);
+
+        switch (e.code) {
+          case 'ECONNREFUSED':
+            process.exit(1);
+            break;
+          case 'ECONNRESET':
+          case 'ETIMEDOUT':
+          default:
+            break;
         }
       } else {
-        logger.info('failed to start watch %s', resourcePath);
+        logger.error('failed to start watch %s', resourcePath);
       }
 
-      await sleep(5000);
+      watch.failed = true;
+      watch.error = e;
+
       try {
-        await startSingleWatch(resourcePath, isNodeWatch);
-        await processMetalLBCRDData();
-        scheduleReconcile();
-      } catch (restartErr) {
-        logger.error(
-          'failed to restart watch for %s: %s',
-          resourcePath,
-          restartErr
-        );
+        await sleep(5 * 1000);
+        watches[resourcePath] = await createWatch(resourcePath);
+      } catch (e) {
+        // noop
+        console.log('failed to recreate watch', e);
       }
+
+      // TODO: not necessary currently as the watches currently set resourceVersion=0
+      // try {
+      //   await processMetalLBCRDData({ reconcile: true });
+      // } catch (e) {
+      //   // noop
+      // }
     }
   );
+  watch.lastActivity = new Date();
+
+  watches[resourcePath] = watch;
+
+  return watch;
 }
 
 /**
  * watch the crds
  */
-async function setupMetalLBCRDsWatch() {
+async function setupMetalLBCRDsWatches() {
   logger.info(`starting crd watches`);
 
   let ns = await getMetalLBNamespace();
@@ -860,18 +909,53 @@ async function setupMetalLBCRDsWatch() {
 
   for (const resource of crd_resources) {
     const resourcePath = `/apis/${resource.groupVersion}${nsPath}/${resource.name}`;
-    await startSingleWatch(resourcePath, false);
+    await createWatch(resourcePath);
   }
 
   if (NODE_NAME) {
     // watching a specific node fails for some reason with the js client
-    //const resourcePath = `/api/v1/nodes/${NODE_NAME}`;
-    const resourcePath = `/api/v1/nodes`;
-    await startSingleWatch(resourcePath, true);
+    // fieldSelector=metadata.name%3Dsomenode
+    const resourcePath = `/api/v1/nodes?fieldSelector=${encodeURIComponent(
+      'metadata.name=' + NODE_NAME
+    )}`;
+    //const resourcePath = `/api/v1/nodes`;
+    await createWatch(resourcePath);
   }
 
-  await processMetalLBCRDData();
-  await reconcile();
+  let deadPeerTimeout = 600;
+  //let deadPeerTimeout = 20;
+  setInterval(async () => {
+    logger.debug('checking for dead watches');
+    const now = new Date();
+    for (const resourcePath in watches) {
+      const watch = watches[resourcePath];
+      //console.log(resourcePath, watch.lastActivity, watch.abortController);
+
+      if (watch.failed) {
+        try {
+          watches[resourcePath] = await createWatch(resourcePath);
+        } catch (e) {
+          // noop
+        }
+      }
+
+      if (watch.lastActivity && watch.abortController) {
+        // abort if we have a dead peer
+        if (now - watch.lastActivity > deadPeerTimeout * 1000) {
+          try {
+            logger.info(
+              `hit the inactivity timeout, aborting watch: ${watch.watchURL}`
+            );
+            watch.abortController.abort();
+          } catch (e) {
+            logger.warn(`failed to abort watch: ${watch.watchURL}`, e);
+          }
+        }
+      }
+    }
+  }, 1000 * deadPeerTimeout);
+
+  await processMetalLBCRDData({ reconcile: true });
 }
 
 const crd_resources = [];
@@ -910,7 +994,7 @@ const crd_resources = [];
         });
         crd_resources.push(r);
       }
-      await setupMetalLBCRDsWatch();
+      await setupMetalLBCRDsWatches();
     } else {
       await setupMetalLBConfigMapWatch();
     }
@@ -922,14 +1006,14 @@ const crd_resources = [];
       wait = 1000;
     }
 
-    setInterval(function () {
+    setInterval(async () => {
       logger.info('reconciling due to max wait');
-      reconcile();
+      await reconcile();
     }, wait);
   }
 
   // manually trigger the fist reconcile
-  reconcile();
+  await reconcile();
 })().catch(e => {
   logger.error('uncaught error', e);
   process.exit(1);
