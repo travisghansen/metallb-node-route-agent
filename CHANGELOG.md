@@ -1,3 +1,13 @@
+# v0.4.12
+
+Released 2026-05-18
+
+- atomic update of global metallb data vars
+- more robust race condition logic
+- `throttle`ing `reconcile` and `processMetalLBCRDData` functions
+- dead peer detection for `watch`es
+- updated npm deps
+
 # v0.4.11
 
 Released 2025-12-08

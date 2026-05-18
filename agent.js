@@ -94,6 +94,14 @@ function sleep(ms) {
   });
 }
 
+function getPromiseState(promise) {
+  const t = {};
+  return Promise.race([promise, t]).then(
+    v => (v === t ? 'pending' : 'fulfilled'),
+    () => 'rejected'
+  );
+}
+
 /**
  * Should return a list of peer ip addresses
  *
@@ -784,10 +792,14 @@ async function createWatch(resourcePath) {
 
   if (watches[resourcePath]) {
     try {
-      logger.verbose(`closing existing watch: ${resourcePath}`);
       let watch = await watches[resourcePath];
-      if (watch && watch.abortController) {
-        watch.abortController.abort();
+      if (
+        watch &&
+        watch.abortController &&
+        (await getPromiseState(watch.abortController)) == 'fulfilled'
+      ) {
+        logger.verbose(`closing existing watch: ${resourcePath}`);
+        (await watch.abortController).abort();
       }
     } catch (e) {
       // noop
@@ -797,6 +809,7 @@ async function createWatch(resourcePath) {
   // TODO: when resourceVersion is present the watch return value promise
   // (abort controller) does not resolve until the first message is received
   // const resourceVersion = await kc.getCurrentResourceVersion(resourcePath);
+  // setting to 0 pulls all resources on init of the watch
   // const resourceVersion = 0;
   // let reesourceVersionParam = `resourceVersion=${resourceVersion}`;
   // if (!resourcePath.includes('?')) {
@@ -805,7 +818,7 @@ async function createWatch(resourcePath) {
   //   reesourceVersionParam = `&${reesourceVersionParam}`;
   // }
 
-  // let watchURL = `${resourcePath}${reesourceVersionParam}`;
+  //let watchURL = `${resourcePath}${reesourceVersionParam}`;
   let watchURL = `${resourcePath}`;
 
   logger.info(`starting ${resourcePath} watch at ${watchURL}`);
@@ -813,6 +826,7 @@ async function createWatch(resourcePath) {
   // set some useful items for future reference on the watch itself
   watch.resourcePath = resourcePath;
   watch.watchURL = watchURL;
+
   watch.abortController = await watch.watch(
     `${watchURL}`,
     {},
@@ -831,12 +845,22 @@ async function createWatch(resourcePath) {
       switch (type) {
         case 'ADDED':
         case 'MODIFIED': {
-          logger.info(`${resourcePath} added/modified`);
+          logger.info(
+            `${resourcePath} (${_.get(
+              watchObj,
+              'object.metadata.name'
+            )}) added/modified`
+          );
           await processMetalLBCRDData({ reconcile: true });
           break;
         }
         case 'DELETED':
-          logger.warn(`${resourcePath} deleted from watch`);
+          logger.warn(
+            `${resourcePath} (${_.get(
+              watchObj,
+              'object.metadata.name'
+            )}) deleted from watch`
+          );
           await processMetalLBCRDData({ reconcile: true });
           break;
         case 'BOOKMARK':
@@ -881,16 +905,19 @@ async function createWatch(resourcePath) {
         console.log('failed to recreate watch', e);
       }
 
-      // TODO: not necessary currently as the watches currently set resourceVersion=0
-      // try {
-      //   await processMetalLBCRDData({ reconcile: true });
-      // } catch (e) {
-      //   // noop
+      // process crd data and reconcile
+      // ignore if resource version is 0 or unset as watches will fire automatically
+      // if (resourceVersion > 0) {
+      //   try {
+      //     await processMetalLBCRDData({ reconcile: true });
+      //   } catch (e) {
+      //     // noop
+      //   }
       // }
     }
   );
-  watch.lastActivity = new Date();
 
+  watch.lastActivity = new Date();
   watches[resourcePath] = watch;
 
   return watch;
@@ -923,9 +950,13 @@ async function setupMetalLBCRDsWatches() {
   }
 
   let deadPeerTimeout = 600;
-  //let deadPeerTimeout = 20;
+  let deadPeerInterval = 61;
+
+  // let deadPeerTimeout = 60;
+  // let deadPeerInterval = 21;
+
   setInterval(async () => {
-    logger.debug('checking for dead watches');
+    logger.verbose('checking for dead peer watches');
     const now = new Date();
     for (const resourcePath in watches) {
       const watch = watches[resourcePath];
@@ -943,17 +974,25 @@ async function setupMetalLBCRDsWatches() {
         // abort if we have a dead peer
         if (now - watch.lastActivity > deadPeerTimeout * 1000) {
           try {
-            logger.info(
-              `hit the inactivity timeout, aborting watch: ${watch.watchURL}`
-            );
-            watch.abortController.abort();
+            if ((await getPromiseState(watch.abortController)) == 'fulfilled') {
+              logger.info(
+                `hit the inactivity timeout, aborting watch: ${watch.watchURL}`
+              );
+              (await watch.abortController).abort();
+            } else {
+              try {
+                watches[resourcePath] = await createWatch(resourcePath);
+              } catch (e) {
+                // noop
+              }
+            }
           } catch (e) {
             logger.warn(`failed to abort watch: ${watch.watchURL}`, e);
           }
         }
       }
     }
-  }, 1000 * deadPeerTimeout);
+  }, 1000 * deadPeerInterval);
 
   await processMetalLBCRDData({ reconcile: true });
 }
