@@ -5,6 +5,7 @@ const fs = require('fs');
 const { IpAddress, IpRange } = require('cidr-calc');
 const IpCommand = require('./lib/ip').IpCommand;
 const KubeConfig = require('./lib/k8s').KubeConfig;
+const ManagedWatch = require('./lib/watch').ManagedWatch;
 const logger = require('./lib/logger').logger;
 const yaml = require('js-yaml');
 
@@ -77,30 +78,8 @@ let metallb_peer_weights = {};
  */
 let metallb_addresses = [];
 
-// TODO: use this
-//let inflight_watches = {};
-
-const watches = {};
-
-/**
- * pause program for given ms
- *
- * @param {*} ms
- * @returns
- */
-function sleep(ms) {
-  return new Promise(resolve => {
-    setTimeout(resolve, ms);
-  });
-}
-
-function getPromiseState(promise) {
-  const t = {};
-  return Promise.race([promise, t]).then(
-    v => (v === t ? 'pending' : 'fulfilled'),
-    () => 'rejected'
-  );
-}
+// all active ManagedWatch instances
+const watches = [];
 
 /**
  * Should return a list of peer ip addresses
@@ -522,52 +501,43 @@ async function getMetalLBNamespace() {
  * watch the configmap
  */
 async function setupMetalLBConfigMapWatch() {
-  // use env var if set
-  let ns = await getMetalLBNamespace();
-
-  // if running in k8s determine using file
-  if (!ns) {
-    if (fs.existsSync(K8S_NAMESPACE_FILE)) {
-      ns = fs.readFileSync(K8S_NAMESPACE_FILE, {
-        encoding: 'utf8',
-        flag: 'r'
-      });
-    }
-  }
-
-  // fallback to default ns
-  if (!ns) {
-    ns = 'metallb-system';
-  }
-
-  let cf = METALLB_CONFIGMAP_NAME;
+  const ns = await getMetalLBNamespace();
+  const cf = METALLB_CONFIGMAP_NAME;
 
   logger.info(`starting watch on k8s configmap ${ns}/${cf}`);
 
-  const watch = kc.createWatch();
-  watch.watch(
-    `/api/v1/watch/namespaces/${ns}/configmaps/${cf}`,
-    {},
-    async (type, apiObj, watchObj) => {
+  const processConfigMap = async configmap => {
+    let data = _.get(configmap, 'data.config', '{}');
+    data = yaml.load(data);
+    await processMetalLBConfigMapData(data);
+    await reconcile();
+  };
+
+  const watch = new ManagedWatch(kc, {
+    path: `/api/v1/namespaces/${ns}/configmaps`,
+    queryParams: { fieldSelector: `metadata.name=${cf}` },
+    logger,
+    onSync: async items => {
+      if (items.length > 0) {
+        logger.info('metallb configmap synced');
+        await processConfigMap(items[0]);
+      } else {
+        logger.warn('metallb configmap not found');
+        await processMetalLBConfigMapData({});
+        await reconcile();
+      }
+    },
+    onEvent: async (type, apiObj) => {
       switch (type) {
         case 'ADDED':
-        case 'MODIFIED': {
+        case 'MODIFIED':
           logger.info('metallb configmap added/modified');
-          let data = _.get(apiObj, 'data.config', '{}');
-          data = yaml.load(data);
-          await processMetalLBConfigMapData(data);
-          await reconcile();
+          await processConfigMap(apiObj);
           break;
-        }
         case 'DELETED':
           logger.warn('metallb configmap deleted from watch');
           await processMetalLBConfigMapData({});
           await reconcile();
-          break;
-        case 'BOOKMARK':
-          logger.verbose(
-            `metallb confimap bookmarked: ${watchObj.metadata.resourceVersion}`
-          );
           break;
         default:
           logger.error(
@@ -577,22 +547,11 @@ async function setupMetalLBConfigMapWatch() {
           break;
       }
     },
-    async e => {
-      metallb_loaded = false;
-      if (e) {
-        logger.error('watch failure: %s', e);
-        switch (e.code) {
-          case 'ECONNREFUSED':
-            process.exit(1);
-        }
-      } else {
-        logger.info('watch timeout');
-      }
+    onError: handleWatchError
+  });
 
-      await sleep(5000);
-      setupMetalLBConfigMapWatch();
-    }
-  );
+  watches.push(watch);
+  watch.start();
 }
 
 /**
@@ -784,141 +743,67 @@ const processMetalLBCRDData = _.throttle(_processMetalLBCRDData, 1000 * 5, {
 });
 
 /**
- * create new watch
+ * shared error handling for all watches
  */
-async function createWatch(resourcePath) {
-  // TODO: add inflight logic here
-  const watch = kc.createWatch();
-
-  if (watches[resourcePath]) {
-    try {
-      let watch = await watches[resourcePath];
-      if (
-        watch &&
-        watch.abortController &&
-        (await getPromiseState(watch.abortController)) == 'fulfilled'
-      ) {
-        logger.verbose(`closing existing watch: ${resourcePath}`);
-        (await watch.abortController).abort();
-      }
-    } catch (e) {
-      // noop
-    }
+function handleWatchError(e) {
+  switch (e && e.code) {
+    case 'ECONNREFUSED':
+      logger.error('k8s api refused connection, exiting: %s', e);
+      process.exit(1);
   }
+}
 
-  // TODO: when resourceVersion is present the watch return value promise
-  // (abort controller) does not resolve until the first message is received
-  // const resourceVersion = await kc.getCurrentResourceVersion(resourcePath);
-  // setting to 0 pulls all resources on init of the watch
-  // const resourceVersion = 0;
-  // let reesourceVersionParam = `resourceVersion=${resourceVersion}`;
-  // if (!resourcePath.includes('?')) {
-  //   reesourceVersionParam = `?${reesourceVersionParam}`;
-  // } else {
-  //   reesourceVersionParam = `&${reesourceVersionParam}`;
-  // }
-
-  //let watchURL = `${resourcePath}${reesourceVersionParam}`;
-  let watchURL = `${resourcePath}`;
-
-  logger.info(`starting ${resourcePath} watch at ${watchURL}`);
-
-  // set some useful items for future reference on the watch itself
-  watch.resourcePath = resourcePath;
-  watch.watchURL = watchURL;
-
-  watch.abortController = await watch.watch(
-    `${watchURL}`,
-    {},
-    async (type, _apiObj, watchObj) => {
-      watch.lastActivity = new Date();
-      if (
-        _.get(watchObj, 'object.apiVersion') == 'v1' &&
-        _.get(watchObj, 'object.kind') == 'Node'
-      ) {
-        if (_.get(watchObj, 'object.metadata.name') != NODE_NAME) {
-          logger.debug('ignoring node update because non-matching node');
-          return;
-        }
+/**
+ * create new watch
+ *
+ * each watch is a single long-lived loop which handles its own reconnects,
+ * dead peer detection, and backoff
+ */
+function createWatch(path, queryParams = {}, shouldProcess = () => true) {
+  const watch = new ManagedWatch(kc, {
+    path,
+    queryParams,
+    logger,
+    onSync: async items => {
+      // let the filter observe current state (return value is irrelevant)
+      for (const item of items) {
+        shouldProcess('SYNC', item);
+      }
+      // a (re)list may have missed events, refresh everything
+      await processMetalLBCRDData({ reconcile: true });
+    },
+    onEvent: async (type, apiObj) => {
+      if (!shouldProcess(type, apiObj)) {
+        return;
       }
 
       switch (type) {
         case 'ADDED':
-        case 'MODIFIED': {
+        case 'MODIFIED':
           logger.info(
-            `${resourcePath} (${_.get(
-              watchObj,
-              'object.metadata.name'
-            )}) added/modified`
+            `${watch.name} (${_.get(apiObj, 'metadata.name')}) added/modified`
           );
           await processMetalLBCRDData({ reconcile: true });
           break;
-        }
         case 'DELETED':
           logger.warn(
-            `${resourcePath} (${_.get(
-              watchObj,
-              'object.metadata.name'
+            `${watch.name} (${_.get(
+              apiObj,
+              'metadata.name'
             )}) deleted from watch`
           );
           await processMetalLBCRDData({ reconcile: true });
           break;
-        case 'BOOKMARK':
-          logger.verbose(
-            `${resourcePath} bookmarked: ${watchObj.metadata.resourceVersion}`
-          );
-          break;
         default:
-          logger.error(`unknown operation on ${resourcePath} watch: %s`, type);
+          logger.error(`unknown operation on ${watch.name} watch: %s`, type);
           break;
       }
     },
-    async e => {
-      if (e) {
-        // if (!String(e).includes('The user aborted a request')) {
-        //   logger.error('watch failure for %s: %s', resourcePath, e);
-        // }
+    onError: handleWatchError
+  });
 
-        logger.error('watch failure for %s: %s', resourcePath, e);
-
-        switch (e.code) {
-          case 'ECONNREFUSED':
-            process.exit(1);
-            break;
-          case 'ECONNRESET':
-          case 'ETIMEDOUT':
-          default:
-            break;
-        }
-      } else {
-        logger.error('failed to start watch %s', resourcePath);
-      }
-
-      watch.failed = true;
-      watch.error = e;
-
-      try {
-        await sleep(5 * 1000);
-        watches[resourcePath] = await createWatch(resourcePath);
-      } catch (e) {
-        // noop
-        console.log('failed to recreate watch', e);
-      }
-
-      // process crd data and reconcile
-      // ignore if resource version is 0 or unset as watches will fire automatically
-      // if (resourceVersion > 0) {
-      //   try {
-      //     await processMetalLBCRDData({ reconcile: true });
-      //   } catch (e) {
-      //     // noop
-      //   }
-      // }
-    }
-  );
-
-  watch.lastActivity = new Date();
-  watches[resourcePath] = watch;
+  watches.push(watch);
+  watch.start();
 
   return watch;
 }
@@ -935,66 +820,27 @@ async function setupMetalLBCRDsWatches() {
   nsPath = `/namespaces/${ns}`;
 
   for (const resource of crd_resources) {
-    const resourcePath = `/apis/${resource.groupVersion}${nsPath}/${resource.name}`;
-    await createWatch(resourcePath);
+    createWatch(`/apis/${resource.groupVersion}${nsPath}/${resource.name}`);
   }
 
   if (NODE_NAME) {
-    // watching a specific node fails for some reason with the js client
-    // fieldSelector=metadata.name%3Dsomenode
-    const resourcePath = `/api/v1/nodes?fieldSelector=${encodeURIComponent(
-      'metadata.name=' + NODE_NAME
-    )}`;
-    //const resourcePath = `/api/v1/nodes`;
-    await createWatch(resourcePath);
+    // node labels are relevant for bgppeer nodeSelectors
+    // only label changes are relevant, ignore status heartbeats etc
+    let lastLabels;
+    createWatch(
+      '/api/v1/nodes',
+      { fieldSelector: `metadata.name=${NODE_NAME}` },
+      (type, apiObj) => {
+        const labels = _.get(apiObj, 'metadata.labels', {});
+        // SYNC (list) seeds the labels so the first heartbeat is ignored
+        if (type == 'MODIFIED' && _.isEqual(labels, lastLabels)) {
+          return false;
+        }
+        lastLabels = labels;
+        return true;
+      }
+    );
   }
-
-  let deadPeerTimeout = 600;
-  let deadPeerInterval = 61;
-
-  // let deadPeerTimeout = 60;
-  // let deadPeerInterval = 21;
-
-  setInterval(async () => {
-    logger.verbose('checking for dead peer watches');
-    const now = new Date();
-    for (const resourcePath in watches) {
-      const watch = watches[resourcePath];
-      //console.log(resourcePath, watch.lastActivity, watch.abortController);
-
-      if (watch.failed) {
-        try {
-          watches[resourcePath] = await createWatch(resourcePath);
-        } catch (e) {
-          // noop
-        }
-      }
-
-      if (watch.lastActivity && watch.abortController) {
-        // abort if we have a dead peer
-        if (now - watch.lastActivity > deadPeerTimeout * 1000) {
-          try {
-            if ((await getPromiseState(watch.abortController)) == 'fulfilled') {
-              logger.info(
-                `hit the inactivity timeout, aborting watch: ${watch.watchURL}`
-              );
-              (await watch.abortController).abort();
-            } else {
-              try {
-                watches[resourcePath] = await createWatch(resourcePath);
-              } catch (e) {
-                // noop
-              }
-            }
-          } catch (e) {
-            logger.warn(`failed to abort watch: ${watch.watchURL}`, e);
-          }
-        }
-      }
-    }
-  }, 1000 * deadPeerInterval);
-
-  await processMetalLBCRDData({ reconcile: true });
 }
 
 const crd_resources = [];

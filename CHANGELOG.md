@@ -1,3 +1,9 @@
+# v0.4.14
+
+Released 2026-11-14
+
+- better watch logic
+
 # v0.4.13
 
 Released 2026-05-18
