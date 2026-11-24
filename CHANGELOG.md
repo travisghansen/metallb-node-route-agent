@@ -1,3 +1,12 @@
+# v0.4.15
+
+Released 2026-11-24
+
+- prevent crash when `processMetalLBCRDData` fails (ie: 429 from an overloaded api server), retry instead
+- fix crash when caching failed k8s discovery requests (`lru-cache` ttl option)
+- run `node` directly in the container instead of `npm` (~60MiB less memory per pod)
+- exit cleanly on `SIGTERM`/`SIGINT`
+
 # v0.4.14
 
 Released 2026-11-14

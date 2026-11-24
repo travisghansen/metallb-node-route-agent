@@ -109,6 +109,7 @@ RULE_FWMARK=0x14
 
 ```
 sudo -E METALLB_STATIC_FILE=./examples/metallb-config.yaml MAX_RECONCILE_WAIT=5000 node agent.js
+sudo -E CLEANANDEXIT=1 node agent.js
 
 docker build --pull -t foobar .
 docker run --rm -ti --net=host -v /etc/iproute2:/etc/iproute2 foobar bash

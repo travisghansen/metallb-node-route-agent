@@ -48,4 +48,4 @@ COPY --from=build /app /app
 
 WORKDIR /app
 
-CMD [ "npm", "run", "start" ]
+CMD [ "node", "agent.js" ]

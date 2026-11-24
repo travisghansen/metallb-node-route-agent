@@ -737,7 +737,31 @@ async function _processMetalLBCRDData(options = {}) {
   }
 }
 
-const processMetalLBCRDData = _.throttle(_processMetalLBCRDData, 1000 * 5, {
+let processMetalLBCRDDataRetryTimer = null;
+
+/**
+ * never reject: 'trailing' throttled invocations are fired from a timer with
+ * no caller awaiting the result, so a rejection (ie: 429 from an overloaded
+ * api server) would crash the process as an unhandled rejection
+ */
+async function _safeProcessMetalLBCRDData(options = {}) {
+  clearTimeout(processMetalLBCRDDataRetryTimer);
+  processMetalLBCRDDataRetryTimer = null;
+  try {
+    await _processMetalLBCRDData(options);
+  } catch (e) {
+    // jitter to avoid every node retrying in lockstep
+    const wait = Math.floor(10 * 1000 + Math.random() * 20 * 1000);
+    logger.error(
+      `failed to process metallb crd data, retrying in ${wait}ms: ${e}`
+    );
+    processMetalLBCRDDataRetryTimer = setTimeout(() => {
+      processMetalLBCRDData(options);
+    }, wait);
+  }
+}
+
+const processMetalLBCRDData = _.throttle(_safeProcessMetalLBCRDData, 1000 * 5, {
   leading: true,
   trailing: true
 });
@@ -844,6 +868,24 @@ async function setupMetalLBCRDsWatches() {
 }
 
 const crd_resources = [];
+
+// node does not get default signal handling when running as pid 1 (ie: in a
+// container without an init process) so explicitly exit on termination
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.once(signal, async () => {
+    logger.info(`received ${signal}, exiting`);
+    for (const watch of watches) {
+      watch.stop();
+    }
+
+    // give an in-progress reconcile a moment to finish
+    await Promise.race([
+      mutex.waitForUnlock(),
+      new Promise(resolve => setTimeout(resolve, 5 * 1000))
+    ]);
+    process.exit(0);
+  });
+}
 
 // start the run loop
 (async () => {
