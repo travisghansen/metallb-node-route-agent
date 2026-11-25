@@ -1,3 +1,10 @@
+# v0.4.16
+
+Released 2026-11-25
+
+- full jitter backoff for `watch` reconnects
+- honor `Retry-After` (ie: 429 from an overloaded api server) on `watch`/`list` failures
+
 # v0.4.15
 
 Released 2026-11-24
